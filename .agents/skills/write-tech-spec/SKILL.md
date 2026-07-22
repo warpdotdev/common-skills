@@ -1,11 +1,11 @@
 ---
 name: write-tech-spec
-description: Write a TECH.md spec for a significant Warp feature after researching the current codebase and implementation constraints. Use when the user asks for a technical spec, implementation plan, or architecture doc tied to a product spec.
+description: Write a TECH.md spec for a significant feature after researching the current codebase and implementation constraints. Use when the user asks for a technical spec, implementation plan, or architecture doc tied to a product spec.
 ---
 
 # write-tech-spec
 
-Write a `TECH.md` spec for a significant feature in Warp.
+Write a `TECH.md` spec for a significant feature.
 
 ## Overview
 
@@ -13,13 +13,13 @@ The tech spec should translate product intent into an implementation plan that f
 
 Write specs to `specs/<id>/TECH.md`, where `<id>` is one of:
 
-- a Linear ticket number (e.g. `specs/APP-1234/TECH.md`)
+- an issue tracker ticket id (e.g. `specs/APP-1234/TECH.md`)
 - a GitHub issue id, prefixed with `gh-` (e.g. `specs/gh-4567/TECH.md`)
 - a short kebab-case feature name (e.g. `specs/vertical-tabs-hover-sidecar/TECH.md`)
 
 Match the id used by the sibling `PRODUCT.md` when one exists. `specs/` should contain only id-named directories as direct children.
 
-Ticket / issue references are optional. If the user has a Linear ticket or GitHub issue, use its id. If they don't, ask them for a feature name to use as the directory. Only create a new Linear ticket or GitHub issue when the user explicitly asks for one; in that case use the Linear MCP tools or `gh` CLI respectively (and `ask_user_question` if team, labels, or repo are unclear).
+Ticket / issue references are optional. If the user has a tracker ticket or GitHub issue, use its id. If they don't, ask them for a feature name to use as the directory. Only create a new tracker ticket or GitHub issue when the user explicitly asks for one; in that case prefer a team-specific `issue-tracking` skill when available, otherwise use tracker guidance from `AGENTS.md`, repo-local companion skills, or repository docs. Use your issue tracker's tooling (for example, an MCP server) or the `gh` CLI respectively, and ask the user if team, labels, or repo are unclear.
 
 ## When to use
 
@@ -37,8 +37,8 @@ When referencing relevant code chunks in the spec, prefer commit-pinned referenc
 Required sections:
 
 1. **Context** — What's being built, how the current system works in the area being changed, and the most relevant files with line references. Combine the "problem," "current state," and "relevant code" into one grounded section. Example references:
-   - [`app/src/workspace/mod.rs:42 @ <commit-sha>`](https://github.com/warpdotdev/warp/blob/<commit-sha>/app/src/workspace/mod.rs#L42) — entry point for the user flow
-   - [`app/src/workspace/workspace.rs (120-220) @ <commit-sha>`](https://github.com/warpdotdev/warp/blob/<commit-sha>/app/src/workspace/workspace.rs#L120-L220) — state and event handling that will likely change
+   - [`src/<module>/<file>:42 @ <commit-sha>`](https://github.com/<org>/<repo>/blob/<commit-sha>/src/<module>/<file>#L42) — entry point for the user flow
+   - [`src/<module>/<other-file> (120-220) @ <commit-sha>`](https://github.com/<org>/<repo>/blob/<commit-sha>/src/<module>/<other-file>#L120-L220) — state and event handling that will likely change
    Reference `PRODUCT.md` for user-visible behavior rather than restating it.
 2. **Proposed changes** — The implementation plan: which modules change, new types/APIs/state being introduced, data flow, ownership boundaries, and how the design follows existing patterns. Call out tradeoffs when there is more than one reasonable path.
 3. **Testing and validation** — How the implementation will be verified against the product behavior. Owns everything about proving the feature works: unit tests, integration tests, manual steps, screenshots, videos, and any other verification. Reference the numbered Behavior invariants from `PRODUCT.md` directly rather than restating them; each important invariant should map to a concrete test or verification step. This section is where validation lives — `PRODUCT.md` intentionally does not have a Validation section.

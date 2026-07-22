@@ -1,19 +1,19 @@
 ---
 name: write-product-spec
-description: Write a PRODUCT.md spec for a significant user-facing feature in Warp, focused on detailed behavior and validation. Use when the user asks for a product spec, desired behavior doc, or PRD, wants to define feature behavior before implementation, or when the feature is substantial or behaviorally ambiguous enough that a written spec would improve implementation or review.
+description: Write a PRODUCT.md spec for a significant user-facing feature, focused on detailed behavior and validation. Use when the user asks for a product spec, desired behavior doc, or PRD, wants to define feature behavior before implementation, or when the feature is substantial or behaviorally ambiguous enough that a written spec would improve implementation or review.
 ---
 
 # write-product-spec
 
-Write a `PRODUCT.md` spec for a significant feature in Warp.
+Write a `PRODUCT.md` spec for a significant feature.
 
 ## Overview
 
 The product spec should make the desired behavior unambiguous enough that an agent can implement it correctly and avoid regressions. Describe the feature purely from the user's perspective — what the user sees, does, and experiences, and the invariants that must hold for them. Do not include implementation details (internal types, state layout, module boundaries, data flow, algorithms).
 
-"User" is not limited to the end user of the Warp app. It means whoever consumes the surface being designed:
+"User" is not limited to the end user of an application. It means whoever consumes the surface being designed:
 
-- For UI / UX features: the human using Warp.
+- For UI / UX features: the human using the product.
 - For a data model: the code that reads and writes that model.
 - For an API, protocol, or library: the callers of that API — other services, client code, plugins, or agents.
 - For a CLI tool or developer-facing surface: the developer invoking it.
@@ -24,17 +24,17 @@ Implementation details, validation, and test planning live in a companion `TECH.
 
 Write specs to `specs/<id>/PRODUCT.md`, where `<id>` is one of:
 
-- a Linear ticket number (e.g. `specs/APP-1234/PRODUCT.md`)
+- an issue tracker ticket id (e.g. `specs/APP-1234/PRODUCT.md`)
 - a GitHub issue id, prefixed with `gh-` (e.g. `specs/gh-4567/PRODUCT.md`)
 - a short kebab-case feature name (e.g. `specs/vertical-tabs-hover-sidecar/PRODUCT.md`)
 
 `specs/` should contain only id-named directories as direct children — no engineer-named subdirectories.
 
-Ticket / issue references are optional. If the user has a Linear ticket or GitHub issue, use its id. If they don't, ask them for a feature name to use as the directory. Only create a new Linear ticket or GitHub issue when the user explicitly asks for one; in that case use the Linear MCP tools or `gh` CLI respectively (and `ask_user_question` if team, labels, or repo are unclear).
+Ticket / issue references are optional. If the user has a tracker ticket or GitHub issue, use its id. If they don't, ask them for a feature name to use as the directory. Only create a new tracker ticket or GitHub issue when the user explicitly asks for one; in that case prefer a team-specific `issue-tracking` skill when available, otherwise use tracker guidance from `AGENTS.md`, repo-local companion skills, or repository docs. Use your issue tracker's tooling (for example, an MCP server) or the `gh` CLI respectively, and ask the user if team, labels, or repo are unclear.
 
 ## Before writing
 
-Gather only the context you need: directory id (Linear ticket, GitHub issue, or feature name), feature summary, target users, key behaviors, edge cases, and how the feature will be validated. Use `ask_user_question` for missing context rather than guessing.
+Gather only the context you need: directory id (issue tracker ticket, GitHub issue, or feature name), feature summary, target users, key behaviors, edge cases, and how the feature will be validated. Use a structured question tool when available for missing context; otherwise ask concisely in chat rather than guessing.
 
 ### Figma mocks
 
@@ -113,7 +113,7 @@ For large features, the implementer may optionally keep a `DECISIONS.md` file su
 
 ## Example Behavior section
 
-A sample Behavior section for a hypothetical feature: rendering GitHub-flavored Markdown tables in the Warp block list. It demonstrates the expected shape — numbered, testable, user-perspective invariants that enumerate defaults, edge cases, malformed input, streaming, selection/copy, search, sharing, theming, and cross-surface consistency, with one inline open question.
+A sample Behavior section for a hypothetical feature: rendering GitHub-flavored Markdown tables in block-based output. It demonstrates the expected shape — numbered, testable, user-perspective invariants that enumerate defaults, edge cases, malformed input, streaming, selection/copy, search, sharing, theming, and cross-surface consistency, with one inline open question.
 
 ````markdown
 ## Behavior

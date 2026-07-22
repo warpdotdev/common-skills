@@ -48,7 +48,7 @@ Use the templates and field definitions in `references/saga-spec-template.md` ve
 
 Goal: produce a comprehensive, unambiguous saga spec tree. This phase is **fully collaborative** with the user. It ends only when the user approves the spec.
 
-When asking the user anything in this phase, **always use the `ask_user_question` tool and provide concrete options** (single- or multi-select) rather than open-ended questions. Set a `recommended_option_index` when there is a sensible default. Open-ended prose questions slow the user down and invite vague answers; options force crisp decisions.
+When asking the user anything in this phase, provide concrete options rather than open-ended questions. If a structured question tool such as `ask_user_question` is available, use it with single- or multi-select options and set a `recommended_option_index` when there is a sensible default. Otherwise, ask in chat with the same options. Open-ended prose questions slow the user down and invite vague answers; options force crisp decisions.
 
 ### 1. Intake and frame
 
@@ -67,7 +67,7 @@ Record these findings in `SAGA.md` under the environment section — workers and
 
 ### 3. Close every gap of ambiguity
 
-Iterate with the user, via `ask_user_question` with options, until there is no whitespace left in the requirements: behavior, scope boundaries, edge cases, data shapes, error handling, non-goals, and acceptance bar. Batch related questions (max 4 per call). Stop only when the remaining decisions are either resolved or explicitly delegated to your discretion by the user.
+Iterate with the user using structured options until there is no whitespace left in the requirements: behavior, scope boundaries, edge cases, data shapes, error handling, non-goals, and acceptance bar. Batch related questions (max 4 per call when using a structured question tool). Stop only when the remaining decisions are either resolved or explicitly delegated to your discretion by the user.
 
 ### 4. Define the saga exit criteria
 
@@ -81,7 +81,7 @@ Write this out as the spec tree in the saga directory: the milestone index and s
 
 ### 6. Get approval
 
-Present the saga spec — walk the user through `SAGA.md` and the milestone/task specs — and ask them to approve or request changes (via `ask_user_question`). **Do not begin Phase 2 until the user approves.** This is the primary human checkpoint.
+Present the saga spec — walk the user through `SAGA.md` and the milestone/task specs — and ask them to approve or request changes using structured options. **Do not begin Phase 2 until the user approves.** This is the primary human checkpoint.
 
 ---
 
@@ -138,7 +138,7 @@ Goal: confirm the saga's exit criteria are met, then hand off to the user for ma
 
 1. Run the full saga-level exit criteria using the strongest available method (computer use for GUI/web, interactive CLI for TUIs, the full test/integration suite otherwise). Summarize the evidence against each exit criterion.
 2. Present the user a concise completion report: what was built, how each exit criterion was validated, and exact steps for them to manually verify (how to run/launch, what to look for).
-3. **Loop in the user for manual acceptance** via `ask_user_question`: accept, or report specific issues. If they report issues, capture them as new tasks, run a focused Phase 2 mini-loop (delegate → self-validate → integrate), and re-present. Repeat until the user accepts.
+3. **Loop in the user for manual acceptance** using structured options: accept, or report specific issues. If they report issues, capture them as new tasks, run a focused Phase 2 mini-loop (delegate → self-validate → integrate), and re-present. Repeat until the user accepts.
 
 Only consider the saga complete when the user confirms acceptance.
 

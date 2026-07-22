@@ -18,13 +18,13 @@ Prefer one self-contained HTML file with inline CSS, inline JavaScript, and inli
 D3 should be loaded from a pinned official release on a reputable CDN. Use the helper script's default unless there is a concrete reason to change it:
 - `https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js`
 Do not use unpinned `latest` URLs, unofficial builds, or dynamic package ranges. Do not show repeated D3 implementation disclaimers in the UI. Keep CDN/runtime details in validation logs or final caveats only when relevant.
-For reusable deterministic D3 rendering, prefer the helper script at `scripts/d3_canvas_runtime.py`. It emits Brandalf-aligned CSS, an inline runtime loader that defines the renderer before injecting the pinned D3 script, and a graph renderer with zoom, pan, graph switching, search, node details, fit-to-view, and guided tour controls. Use this helper rather than writing one-off D3 setup code in each generated walkthrough.
+For reusable deterministic D3 rendering, prefer the helper script at `scripts/d3_canvas_runtime.py`. It emits the default styling CSS, an inline runtime loader that defines the renderer before injecting the pinned D3 script, and a graph renderer with zoom, pan, graph switching, search, node details, fit-to-view, and guided tour controls. Use this helper rather than writing one-off D3 setup code in each generated walkthrough.
 The generated canvas must be treated as generated code that requires validation. Before reporting that a walkthrough is ready, run `scripts/validate_d3_canvas.py` against the generated HTML. If the canvas fails to initialize, D3 fails to load, required graphs are missing, tour controls do not work, nodes/edges do not render, or browser validation cannot be performed in an environment where it should be available, debug and regenerate before saying the walkthrough is ready. If a browser-capable environment is genuinely unavailable, report canvas rendering as unverified instead of ready.
-## Brand styling
-Use the `brandalf` skill when generating or revising walkthrough visual design. Brandalf points to the hosted Warp brand source of truth; fetch and apply it before writing the HTML/CSS for the walkthrough. If the hosted brand source is unavailable, proceed with the fallback tokens below and report the caveat in the final response.
-Apply these Brandalf-derived defaults unless the fetched brand source says otherwise:
-- Use a Warp dark surface: `#121212` for the page background, `#1e1e1d`/`#292929` for panels, and `#faf9f6` or `#ffffff` for text.
-- Use Warp pink accent `#a43787` intentionally for active states, key links, focus rings, selected tour steps, and high-emphasis labels. Use secondary green `#34895c`, blue `#2e5d9e`, and purple `#754dac` as graph colors.
+## Styling
+Use the neutral fallback styling tokens below for the walkthrough's visual design. They are brand-agnostic defaults and require no external brand source. If a `branding` skill is available, apply its brand tokens, fonts, and styling guidance on top of these defaults; when present, follow it and report any branding caveats in the final response.
+Apply these default tokens:
+- Use a dark surface: `#121212` for the page background, `#1e1e1d`/`#292929` for panels, and `#faf9f6` or `#ffffff` for text.
+- Use a pink accent `#a43787` intentionally for active states, key links, focus rings, selected tour steps, and high-emphasis labels. Use secondary green `#34895c`, blue `#2e5d9e`, and purple `#754dac` as graph colors.
 - Use Matter for UI/body text with `DM Sans, system-ui, sans-serif` fallback. Use Matter Mono for code, metadata, canvas labels, coordinates, file paths, and machine-oriented snippets with `Roboto Mono, ui-monospace, monospace` fallback.
 - Keep copy truth-seeking, technical, concise, and verifiable. Avoid marketing superlatives and generic buzzwords.
 - Prefer sharp, documentation-like containers with subtle borders. Use rounded corners only where they improve readability for cards, node callouts, tooltips, and buttons.
@@ -211,7 +211,7 @@ Required content behavior:
 - Existing human and agent review comments must be attached to relevant nodes or summarized in a review-discussion node.
 - Visual artifacts should appear as node attachments in the detail panel.
 - For tiny and small PRs, represent missing specs, review discussion, and visuals as terse detail-panel notes on an existing node instead of standalone nodes, unless they materially change how the reviewer should read the PR.
-- Use Brandalf-aligned Warp styling: dark `#121212` surfaces, off-white text, Matter/Matter Mono typography, pink active accents, and graph colors from the brand palette.
+- Use the default fallback styling tokens: dark `#121212` surfaces, off-white text, sans-serif/monospace typography, pink active accents, and graph colors from the documented palette.
 Use helper output:
 ```bash
 python3 .agents/skills/pr-walkthrough/scripts/d3_canvas_runtime.py --css
@@ -232,7 +232,7 @@ Before finishing:
 10. Confirm every node has explanatory text and relevant changed-file links where applicable, except system overview cards, which should not include PR diff links, changed-file annotations, review comments, screenshots, specs, or implementation deltas.
 11. Confirm PR-changed specs and existing PR review comments were fetched and either represented in the graphs or explicitly reported as absent/unavailable.
 12. Confirm screenshots, mocks, Figma exports, changed images, and video thumbnails referenced by the walkthrough are local relative assets or data URIs, not remote hotlinks.
-13. Confirm the site uses Brandalf/Warp styling.
+13. Confirm the site uses the documented fallback styling tokens.
 14. Run the reusable validator:
 ```bash
 python3 .agents/skills/pr-walkthrough/scripts/validate_d3_canvas.py --html .warp/pr-walkthrough/index.html --require-browser

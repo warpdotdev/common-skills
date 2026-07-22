@@ -7,6 +7,11 @@ description: Diagnose CI failures for a PR using the GitHub CLI, extract error l
 
 Programmatically diagnose CI failures for a PR and generate a plan to fix them.
 
+## Related Skills
+
+- `fix-errors` - Resolve the build, lint, formatting, and test failures identified by the diagnosis.
+- `diagnose-ci-failures-local` - Optional per-repo companion that documents exact CI check names and local failure categories.
+
 ## Overview
 
 This skill provides a deterministic workflow to check CI status for a PR, extract failure logs, analyze errors, and create a plan (not code changes) to resolve issues. The output is always a plan document that can be reviewed before execution.
@@ -52,19 +57,19 @@ gh run view <run-id> --log-failed
 
 Focus on extracting:
 - Error messages and their locations (file paths, line numbers)
-- Compilation errors (unused imports, type mismatches, etc.)
-- Linting/clippy errors with specific lint names
+- Build and compilation errors (unresolved imports, type mismatches, etc.)
+- Lint errors with specific lint names
 - Test failure messages and stack traces
 - Build failures and their root causes
 
 ### 4. Categorize errors
 
-Group errors by type:
-- **Formatting issues**: `cargo fmt` failures
-- **Linting issues**: `cargo clippy` warnings/errors
-- **Compilation errors**: Type errors, missing imports, signature mismatches
-- **Test failures**: Failing tests with their names and failure reasons
-- **Platform-specific issues**: WASM, Linux, macOS, Windows-specific failures
+Group errors by type, for example:
+- **Formatting issues**: formatter check failures
+- **Lint issues**: linter warnings/errors
+- **Build/compilation errors**: type errors, missing imports, signature mismatches
+- **Test failures**: failing tests with their names and failure reasons
+- **Platform-specific issues**: failures isolated to a particular OS, architecture, or build target
 
 ### 5. Generate fix plan
 
@@ -72,7 +77,7 @@ Create a plan document (using `create_plan` tool) with:
 - **Problem Statement**: Summary of failing checks
 - **Current State**: What errors were found and where
 - **Proposed Changes**: Specific fixes needed for each error category
-- **Validation Steps**: Commands to verify fixes (fmt, clippy, tests, presubmit)
+- **Validation Steps**: The repository's check commands needed to verify the fixes
 
 The plan should reference the `fix-errors` skill for detailed guidance on resolving specific error types.
 
@@ -81,18 +86,10 @@ The plan should reference the `fix-errors` skill for detailed guidance on resolv
 - **Always create a plan first**: Never make code changes directly. Generate a plan for user review
 - **Check test status in CI**: Even if tests fail locally, verify they passed in CI before flagging as issues
 - **Unrelated test failures**: If tests passed in CI but fail locally, they may be environment-specific or flaky
-- **Multiple error types**: Fix one category at a time (e.g., all clippy errors before tests)
+- **Multiple error types**: Fix one category at a time (e.g., all lint errors before tests)
 - **Cross-reference fix-errors skill**: For detailed error resolution strategies, use the `fix-errors` skill
 
-## Common CI Check Names
-
-- `Formatting + Clippy (MacOS)`
-- `Formatting + Clippy (Linux)`
-- `Run MacOS tests`
-- `Run Linux tests`
-- `Run Windows tests`
-- `Check CI results` (summary check)
-- `WASM build`
+A repo may provide a `diagnose-ci-failures-local` companion that documents its specific CI check names and error categories.
 
 ## Example Commands
 

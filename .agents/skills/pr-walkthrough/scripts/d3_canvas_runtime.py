@@ -512,7 +512,7 @@ def sample_data() -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Emit reusable D3 PR walkthrough graph tour snippets.")
     group = parser.add_mutually_exclusive_group(required=True)
-    group.add_argument("--css", action="store_true", help="Print Brandalf-aligned D3 graph CSS.")
+    group.add_argument("--css", action="store_true", help="Print the default D3 graph CSS.")
     group.add_argument("--runtime", action="store_true", help="Print pinned-CDN D3 runtime and graph renderer.")
     group.add_argument("--template", action="store_true", help="Print a complete HTML template from graph JSON.")
     group.add_argument("--sample-data", action="store_true", help="Print sample graph JSON.")

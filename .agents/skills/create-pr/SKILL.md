@@ -1,50 +1,42 @@
 ---
 name: create-pr
-description: Create a pull request in the warp repository for the current branch. Use when the user mentions opening a PR, creating a pull request, submitting changes for review, or preparing code for merge.
+description: Create a pull request for the current branch. Use when the user mentions opening a PR, creating a pull request, submitting changes for review, or preparing code for merge.
 ---
 
 # create-pr
 
 ## Overview
 
-This guide covers best practices for creating pull requests in the warp repository, including merging master, running presubmit checks, linking Linear tasks, ensuring appropriate test coverage, and structuring your PR for effective review.
+This guide covers best practices for creating pull requests, including merging the base branch, running the repository's checks, linking tracker tasks, ensuring appropriate test coverage, and structuring your PR for effective review.
 
 ## Related Skills
 
-- `fix-errors` - Fix presubmit failures (formatting, linting, tests) before opening PR
-- `warp-integration-test` - Add or update integration coverage for user-visible flows, regressions, and P0 use cases
-- `add-feature-flag` - Gate changes behind feature flags
+- `fix-errors` - Fix build, lint, formatting, and test failures before opening a PR
+- `create-pr-local` - Optional per-repo companion that layers repo-specific build/test commands and PR conventions on top of this core
 
 ## Pre-PR Checklist
 
-### 1. Merge master into your feature branch
+### 1. Merge the base branch into your feature branch
 
-**Always merge master into your feature branch before starting the review process.**
+**Always merge the latest base branch into your feature branch before starting the review process.**
+If the base branch is not already known, determine it before merging. Prefer the current PR's base from `gh pr view`, then the remote default branch from `git symbolic-ref --short refs/remotes/origin/HEAD`, then a documented repository convention.
 
 ```bash
 git fetch origin
-git merge origin/master
+git merge origin/<base-branch>
 ```
 
 Resolve any merge conflicts locally before opening the PR.
 
-### 2. Run presubmit checks for code changes
+### 2. Run the repository's checks for code changes
 
-If the PR includes code changes, run the relevant presubmit checks before opening or updating it:
+If the PR includes code changes, run the repository's own formatting, linting, build, and test checks before opening or updating it. Consult the repo's `AGENTS.md`, which usually documents the exact format/lint/build/test commands; otherwise fall back to whatever the repo documents (for example, a check script, a `Makefile` target, or the language toolchain's commands). When a repo provides an optional `create-pr-local` companion skill, it documents the exact check commands to run.
 
-```bash
-./script/presubmit
-```
+If the PR is documentation-only (for example, skills, markdown, or other non-code content), you do not need to run code formatting or linting just to open or update the PR.
 
-`./script/presubmit` runs:
-- `cargo fmt` - Code formatting
-- `cargo clippy` - Linting with all warnings as errors
-- All tests (unit, doc, and integration)
-If the PR is documentation-only (for example, skills, markdown, or other non-code content), you do not need to run `cargo fmt` or `cargo clippy` just to open or update the PR.
+If checks fail for a code-changing PR, use the `fix-errors` skill to resolve issues.
 
-If presubmit fails for a code-changing PR, use the `fix-errors` skill to resolve issues.
-
-**You must run `cargo fmt` and `cargo clippy` before:**
+**Run the repository's formatting, linting, and tests before:**
 - Opening a new PR that includes code changes
 - Pushing new commits that include code changes to an existing PR branch
 - Any reviewed branch update that changes code
@@ -69,26 +61,21 @@ This helps you:
 - Catch unintended changes before review
 - Write an accurate PR description
 - Ensure you're comparing against the correct base branch
-- **Tests:** Include tests when required—bug fixes (regression test), algorithmic code (unit tests), UI components (layout test), P0 use cases (integration test). See Testing Requirements below.
+- **Tests:** Include tests when required—bug fixes (regression test) and algorithmic code (unit tests). See Testing Requirements below.
 
-### 4. Link to Linear task
+### 4. Link to a tracker task
 
-When possible, PRs should be associated with a Linear task. Use the Linear MCP tool (if available) to find corresponding issues.
+When possible, PRs should be associated with an issue tracker task. If a team-specific `issue-tracking` skill is available, use it to find the corresponding issue and linking convention. Otherwise, look for tracker guidance in `AGENTS.md`, a repo-specific `create-pr-local` companion, or repository docs. If the tracker, team, labels, or issue are still unclear and a structured question tool is available, ask the user; outside environments with such a tool, ask concisely in chat.
 
 **Branch naming convention:**
 Remote branches should be prefixed with your name (e.g., `zheng/feature`, `alice/fix-bug`).
 
-**How to link PRs to Linear:**
-Include the issue ID in the PR title (e.g., `[WARP-1234] Add new feature`). Do this **before** creating the PR for automatic linking.
+**How to link PRs to the tracker:**
+Include the issue ID in the PR title (e.g., `[APP-1234] Add new feature`). Do this **before** creating the PR for automatic linking.
 
 ### 5. Open the PR
 
-Use the PR template at `.github/pull_request_template.md` when opening PRs.
-
-Add changelog entries when appropriate using the format at the bottom of the PR template. Some examples:
-- Feature: "Global search in files across your current directories. Use CMD-F/CTRL-SHIFT-F to open."
-- Improvement: "Added horizontal autoscrolling when jumping to line/column."
-- Bug fix: "Fixed session viewer input being cleared when agent runs commands.
+Use the PR template at `.github/pull_request_template.md` when the repository provides one. If the repo provides an optional `create-pr-local` companion skill, follow its PR conventions (labels, reviewers, template specifics) as well.
 
 **CLI workflow:**
 
@@ -124,11 +111,13 @@ Add changelog entries when appropriate using the format at the bottom of the PR 
 
 ### 6. Include co-author attribution
 
-When committing changes or creating a PR, include attribution at the end of every commit message or PR description:
+When committing changes or creating a PR, include your agent's co-author attribution at the end of every commit message or PR description, for example:
 
 ```
-Co-Authored-By: Warp <agent@warp.dev>
+Co-Authored-By: <Your Agent> <agent@example.com>
 ```
+
+For the exact trailer and reply prefix your team uses, follow the optional attribution companion when one is available — a repo's `create-pr-local` skill or a shared team `agent-attribution` skill — rather than hardcoding a specific agent identity here.
 
 ## Testing Requirements
 
@@ -146,9 +135,8 @@ The test should:
 Code with non-trivial logic should have unit tests to validate functionality:
 
 **Examples of what needs unit tests:**
-- Custom data structures (e.g., `SumTree`)
-- Search-related APIs that should return expected results for a given query
-- Core layout code in the UI framework
+- Custom data structures
+- APIs that should return expected results for a given input
 - Any algorithmic or computational logic
 
 **Not required for:**
@@ -157,68 +145,26 @@ Code with non-trivial logic should have unit tests to validate functionality:
 
 Follow the repository's local testing conventions for guidance on writing unit tests.
 
-### UI components need layout validation tests
+### Cover user-visible flows and critical paths
 
-**All UI components (implementations of `View`) should have a simple unit test** to validate that they can be laid out without a panic.
+If the PR changes a user-visible flow, fixes an end-to-end regression, or covers a critical (P0) use case—any behavior that would warrant an urgent fix if broken—add or update the appropriate integration or end-to-end coverage following the repository's conventions. If you are unsure whether coverage is warranted and a structured question tool is available, use it to confirm before creating or updating the PR; otherwise, ask the user concisely in chat before adding broad coverage.
 
-This provides high-level coverage over rendering "safety" (though not "correctness"):
-
-```rust
-#[test]
-fn test_component_can_layout() {
-    use warpui::App;
-    use warp::test_util::{terminal::initialize_app_for_terminal_view, add_window_with_terminal};
-    
-    App::test((), |mut app| async move {
-        initialize_app_for_terminal_view(&mut app);
-        let term = add_window_with_terminal(&mut app, None);
-        
-        // Render the component - should not panic
-        term.update(&mut app, |view, ctx| {
-            // Create and layout your component
-        });
-    })
-}
-```
-
-### Ask before skipping integration coverage
-
-If the PR changes a user-visible flow, fixes an end-to-end regression, or otherwise looks like it would benefit from integration coverage, use the `ask_user_question` tool before creating or updating the PR to ask whether the user wants an integration test added as part of the work.
-
-Prefer a direct choice such as:
-
-- `Yes, add an integration test before creating the PR`
-- `No, continue without an integration test`
-
-If the user chooses to add one, use the `warp-integration-test` skill.
-
-### P0 use cases require integration tests
-
-**All "P0 use cases" require an integration test** that covers the behavior/flow in question.
-
-**A "P0 use case" is defined as:** Any behavior of the application that, if broken, warrants an out-of-band release.
-
-Integration tests should:
-- Exercise the full user-facing flow
-- Validate end-to-end functionality
-- Be placed in the `integration/` directory
-
-Use the `warp-integration-test` skill for implementation details, test registration steps, and validation workflow.
+A repo may document its integration-test framework and P0 expectations in a `create-pr-local` companion.
 
 ## PR Description Guidelines
 
 Your PR summary under the "Description" section should include:
 
 1. **What** - What changes are being made
-2. **Why** - Why these changes are necessary (link to Linear task if applicable)
+2. **Why** - Why these changes are necessary (link to the tracker task if applicable)
 3. **How** - Brief explanation of the approach taken
 
 ## After Opening the PR
 
 1. **Monitor CI checks** - Ensure all automated checks pass
 2. **Respond to review comments** - Address feedback promptly
-3. **Keep the PR up to date** - Merge master if conflicts arise
-4. **Re-run relevant validation** - After making changes based on review feedback. For code changes, re-run `cargo fmt`/`cargo clippy` (and other relevant checks); for documentation-only changes, this is not required.
+3. **Keep the PR up to date** - Merge the base branch if conflicts arise
+4. **Re-run relevant validation** - After making changes based on review feedback. For code changes, re-run the repository's formatting, linting, and tests; for documentation-only changes, this is not required.
 
 ## Best Practices
 
@@ -227,4 +173,4 @@ Your PR summary under the "Description" section should include:
 - **Self-review first** - Review your own diff before requesting review
 - **Update tests** - Ensure test coverage reflects your changes
 - **Document breaking changes** - Call out any API changes or breaking modifications
-- **Use feature flags** - Gate risky changes behind feature flags when appropriate (see the `add-feature-flag` skill)
+- **Use feature flags** - Gate risky changes behind feature flags when appropriate

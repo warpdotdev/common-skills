@@ -36,7 +36,7 @@ The bar: when the criteria are satisfied, there should be little-to-no possibili
 - **State what must NOT change.** Where regressions are a risk, include "existing X still passes / behaves as before" as an explicit criterion.
 - **Require evidence.** Each task must specify what the worker returns to prove completion: test output, screenshots, an interactive transcript, sample command output. No evidence, no pass.
 
-If you cannot express a task's criteria this concretely, the task is under-specified: split it, add detail, or resolve the ambiguity with the user (with options via `ask_user_question`).
+If you cannot express a task's criteria this concretely, the task is under-specified: split it, add detail, or resolve the ambiguity with the user using structured options.
 
 ## 4. What workers do with criteria (self-validation loop)
 

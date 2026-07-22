@@ -4,7 +4,7 @@ Use this when asked to continue, resume, or pick up a saga — typically a fresh
 
 ## 1. Locate the saga directory
 
-Find the saga under `~/.sagas/`. If the user named it or gave a path, use that. Otherwise `ls ~/.sagas/` and, if ambiguous, ask the user which one (via `ask_user_question` listing the candidates). The directory name is the saga's stable identity.
+Find the saga under `~/.sagas/`. If the user named it or gave a path, use that. Otherwise `ls ~/.sagas/` and, if ambiguous, ask the user which one with structured options listing the candidates. The directory name is the saga's stable identity.
 
 ## 2. Rebuild orientation cheaply
 
@@ -31,7 +31,7 @@ From the reconciled state:
 
 - If milestones remain, resume the **Phase 2 orchestration loop** at the current milestone: launch the next batch of pending/blocked tasks (workers in isolated worktrees), collect reports, integrate, run milestone-level validation, and advance. Follow `SKILL.md` Phase 2.
 - If all milestones are integrated and validated, move to **Phase 3 final validation**: check the saga exit criteria and loop the user in for manual acceptance.
-- If a blocker or open question recorded in `PROGRESS.md` needs the user, resolve it first via `ask_user_question` with options.
+- If a blocker or open question recorded in `PROGRESS.md` needs the user, resolve it first with structured options.
 
 ## 5. Keep the contract intact
 
