@@ -20,7 +20,7 @@ Review the current pull request and write the output to `review.json`.
 ## Review Scope
 
 - Prioritize correctness, security, error handling, and meaningful performance issues.
-- Treat comment quality and, for bug-fix PRs, regression-test adequacy as first-class review priorities alongside those — not as optional nits to mention only if time allows. See "Pre-Verdict Audit" below for the mandatory check.
+- Treat comment quality and test quality as first-class review priorities alongside those — not as optional nits to mention only if time allows. See "Pre-Verdict Audit" below for the mandatory check.
 - If the consuming repository provides a local `security-review-pr` companion skill or the prompt requests a security pass, apply it as supplemental guidance on code PRs and fold any security findings into the same `review.json` rather than emitting a separate output.
 - When `spec_context.md` exists, use the repository's local `check-impl-against-spec` skill if available and treat material spec drift as a review concern.
 - Include style or nit comments only when you can provide a concrete suggestion block.
@@ -53,7 +53,7 @@ Every comment body must start with one of these labels:
 - `💡 [SUGGESTION]` for worthwhile improvements or better patterns.
 - `🧹 [NIT]` for cleanup only when the comment includes a suggestion block.
 
-A confirmed violation of a named repo comment rule, or a regression test that does not cover the call site of the bug it claims to guard, can warrant `⚠️ [IMPORTANT]` on its own — regardless of how clean the rest of the PR is. Do not default these to `🧹 [NIT]`/`💡 [SUGGESTION]` just because the surrounding code looks good.
+A confirmed violation of the repository's commenting or testing guidelines can warrant `⚠️ [IMPORTANT]` on its own — regardless of how clean the rest of the PR is. Do not default these to `🧹 [NIT]`/`💡 [SUGGESTION]` just because the surrounding code looks good.
 
 Write comments with these constraints:
 
@@ -127,10 +127,10 @@ The top-level `body` must include:
 
 ## Pre-Verdict Audit
 
-Before drafting the top-level `body` or choosing `verdict`, complete this audit. A holistic read-through of the diff is not sufficient for these two checks — go item by item.
+Before drafting the top-level `body` or choosing `verdict`, complete this audit — a holistic read-through of the diff is not sufficient.
 
-- **Comment audit**: List every comment the diff adds or changes (doc comments and inline comments). Check each one individually, rule by rule, against the consuming repository's own commenting conventions (a project style doc, or a companion skill's comment-audit guidance) — do not judge the set of comments holistically. Name the specific convention a comment violates rather than giving a general impression — e.g. it restates what the code already says, narrates internal steps, describes the edit rather than the current state, duplicates an explanation already given elsewhere, or an existing comment was deleted as collateral of an unrelated change. If the repository provides no explicit commenting conventions, fall back to: comments should explain non-obvious *why*, not restate *what*/*how*, and should describe the current code rather than the change that produced it.
-- **Regression-test adequacy**: For any test the PR frames as a regression test (by name, docstring, or PR description), find the exact code location where the original defect lived, per the repository's own testing conventions. Merely confirming the test *executes* that location is not enough: name the specific assertion or mechanism in the test that would *fail* if the exact defective code were restored there. An assertion the original defective code would also have satisfied leaves the regression undetected even though the test runs through the right location. If you cannot name that failing assertion/mechanism, flag the test as inadequate and say what it should assert on instead. Reaching only a private helper or an internal function one step removed from that location is one common way this fails — not the only one.
+- **Comments**: Check every comment the diff adds or changes against the repository's own commenting guidelines, whatever form those take.
+- **Tests**: Check every test the diff adds or changes against the repository's own testing guidelines, whatever form those take.
 
 ## Final Checks
 
