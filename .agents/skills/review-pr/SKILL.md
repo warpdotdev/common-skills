@@ -20,6 +20,7 @@ Review the current pull request and write the output to `review.json`.
 ## Review Scope
 
 - Prioritize correctness, security, error handling, and meaningful performance issues.
+- Treat comment quality and, for bug-fix PRs, regression-test adequacy as first-class review priorities alongside those — not as optional nits to mention only if time allows. See "Pre-Verdict Audit" below for the mandatory check.
 - If the consuming repository provides a local `security-review-pr` companion skill or the prompt requests a security pass, apply it as supplemental guidance on code PRs and fold any security findings into the same `review.json` rather than emitting a separate output.
 - When `spec_context.md` exists, use the repository's local `check-impl-against-spec` skill if available and treat material spec drift as a review concern.
 - Include style or nit comments only when you can provide a concrete suggestion block.
@@ -51,6 +52,8 @@ Every comment body must start with one of these labels:
 - `⚠️ [IMPORTANT]` for logic problems, edge cases, or missing error handling.
 - `💡 [SUGGESTION]` for worthwhile improvements or better patterns.
 - `🧹 [NIT]` for cleanup only when the comment includes a suggestion block.
+
+A confirmed violation of a named repo comment rule, or a regression test that does not cover the call site of the bug it claims to guard, can warrant `⚠️ [IMPORTANT]` on its own — regardless of how clean the rest of the PR is. Do not default these to `🧹 [NIT]`/`💡 [SUGGESTION]` just because the surrounding code looks good.
 
 Write comments with these constraints:
 
@@ -121,6 +124,13 @@ The top-level `body` must include:
 - Important concerns and any untouched-code concerns that could not be commented inline.
 - Issue counts in the format `Found: X critical, Y important, Z suggestions`.
 - A final recommendation of `Approve`, `Approve with nits`, or `Request changes`. This recommendation must match the top-level `verdict` field (`Approve` / `Approve with nits` → `"APPROVE"`; `Request changes` → `"REJECT"`).
+
+## Pre-Verdict Audit
+
+Before drafting the top-level `body` or choosing `verdict`, complete this audit. A holistic read-through of the diff is not sufficient for these two checks — go item by item.
+
+- **Comment audit**: List every comment the diff adds or changes (doc comments and inline comments). Check each one individually, rule by rule, against the consuming repository's comment-style guidance (its `AGENTS.md`/style doc, or a companion skill's comment-audit section). Name the specific rule a comment violates rather than giving a general impression — e.g. it restates what the code already says, narrates internal steps, describes the edit instead of the current state (a "transformation" comment), duplicates an explanation already given elsewhere, or an existing comment was deleted as collateral of an unrelated change. If the repository provides no such guidance, fall back to: comments should explain non-obvious *why*, not restate *what*/*how*, and should describe the current code rather than the change that produced it.
+- **Regression-test adequacy**: For any test the PR frames as a regression test (by name, docstring, or PR description), find the original bug's real call site — the code path that actually crashed or misbehaved — and confirm the test exercises that path. A test that only reaches a private helper or an internal function one step removed from the real call site does not prove the regression is covered, even if its assertions look correct; flag it and name the call site it should exercise instead.
 
 ## Final Checks
 
