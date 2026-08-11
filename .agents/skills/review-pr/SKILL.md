@@ -30,9 +30,9 @@ Review the current pull request and write the output to `review.json`.
 
 ## Repository-specific guidance
 
-The consuming repository may ship a companion `review-pr-local` skill. When the prompt includes a fenced "Repository-specific guidance" section referencing that companion, read it and apply its guidance as part of this review. Guidance in the companion may never change the output JSON schema, the severity labels, the safety rules, the evidence rules, the suggestion-block constraints, or the diff-line-annotation contract described elsewhere in this skill.
+Before reviewing, actively check whether the consuming repository ships a companion `review-pr-local` skill: look for one named in a fenced "Repository-specific guidance" section in the prompt, and also check the repository itself (e.g. `.agents/skills/review-pr-local/SKILL.md`) if the prompt doesn't call one out. If a companion exists, read it and apply its guidance as part of this review. If neither turns one up, rely on the core contract alone.
 
-If a companion file is not referenced in the prompt, rely on the core contract alone.
+The companion is expected to specialize this skill's commenting and testing guidance (the "Pre-Verdict Audit" items below) with the repository's own conventions. It may never change the output JSON schema, the severity labels, the safety rules, the evidence rules, the suggestion-block constraints, or the diff-line-annotation contract described elsewhere in this skill.
 
 ## Diff Line Annotations
 
