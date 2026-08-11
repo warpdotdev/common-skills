@@ -20,7 +20,7 @@ Review the current pull request and write the output to `review.json`.
 ## Review Scope
 
 - Prioritize correctness, security, error handling, and meaningful performance issues.
-- Treat comment quality and test quality as first-class review priorities alongside those — not as optional nits to mention only if time allows. See "Pre-Verdict Audit" below for the mandatory check.
+- Treat comment quality and test quality as first-class review priorities alongside those — not as optional nits to mention only if time allows; check both against the repository's own conventions before finalizing your verdict.
 - If the consuming repository provides a local `security-review-pr` companion skill or the prompt requests a security pass, apply it as supplemental guidance on code PRs and fold any security findings into the same `review.json` rather than emitting a separate output.
 - When `spec_context.md` exists, use the repository's local `check-impl-against-spec` skill if available and treat material spec drift as a review concern.
 - Include style or nit comments only when you can provide a concrete suggestion block.
@@ -30,9 +30,9 @@ Review the current pull request and write the output to `review.json`.
 
 ## Repository-specific guidance
 
-Before reviewing, actively check whether the consuming repository ships a companion `review-pr-local` skill: look for one named in a fenced "Repository-specific guidance" section in the prompt, and also check the repository itself (e.g. `.agents/skills/review-pr-local/SKILL.md`) if the prompt doesn't call one out. If a companion exists, read it and apply its guidance as part of this review. If neither turns one up, rely on the core contract alone.
+Before reviewing, actively check whether the consuming repository ships a companion `review-pr-local` skill that specializes this one for its own conventions: if the prompt names one, read it there; otherwise look for one in the repository itself (for example, at `.agents/skills/review-pr-local/SKILL.md`, though a repository may place or name its specialization differently). If a companion exists, read it and apply its guidance as part of this review. If none turns up either way, rely on the core contract alone.
 
-The companion is expected to specialize this skill's commenting and testing guidance (the "Pre-Verdict Audit" items below) with the repository's own conventions. It may never change the output JSON schema, the severity labels, the safety rules, the evidence rules, the suggestion-block constraints, or the diff-line-annotation contract described elsewhere in this skill.
+The companion is expected to specialize this skill's commenting and testing guidance with the repository's own conventions. It may never change the output JSON schema, the severity labels, the safety rules, the evidence rules, the suggestion-block constraints, or the diff-line-annotation contract described elsewhere in this skill.
 
 ## Diff Line Annotations
 
