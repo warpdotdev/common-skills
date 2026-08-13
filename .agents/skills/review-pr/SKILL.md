@@ -129,7 +129,7 @@ The top-level `body` must include:
 
 Before drafting the top-level `body` or choosing `verdict`, complete this audit — a holistic read-through of the diff is not sufficient.
 
-- **Comments**: Check every comment the diff adds or changes against the repository's own commenting guidelines, whatever form those take.
+- **Comments**: List every comment (doc comment or inline) the diff adds or changes, one by one with its file:line. For each one, check it individually against the repository's own commenting guidelines, whatever form those take — or, if the repository defines none, judge it against the commenting distribution of existing code in the project (density, tone, what existing comments explain vs. omit). Evaluate compliance independently of the comment's writing quality, technical accuracy, or how subtle/important the issue it describes is: none of those qualities excuses a violation of an applicable guideline or a clear mismatch with the codebase's own norms.
 - **Tests**: Check every test the diff adds or changes against the repository's own testing guidelines, whatever form those take.
 
 ## Final Checks
