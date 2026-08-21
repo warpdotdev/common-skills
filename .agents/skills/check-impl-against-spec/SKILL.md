@@ -13,25 +13,25 @@ Determine whether the implementation in the checked-out PR materially matches th
 
 ## Inputs
 
-- `spec_context.md` contains the spec context to compare against. It may include both product spec content (intended behavior, acceptance criteria) and tech spec content (implementation details, file changes).
+- `spec_context.md` contains the approved spec context to compare against. It may combine behavior, design, constraints, validation, migrations, rollout, and non-goals from any relevant specs.
 - `pr_diff.txt` contains the annotated diff for the PR.
 - `pr_description.md` may contain additional scope or rationale.
 - The working tree contains the PR branch contents.
 
 ## Process
 
-1. Read `spec_context.md` and extract the concrete commitments it makes:
-   - required behaviors (from the product spec)
-   - required files or subsystems to change (from the tech spec)
-   - stated constraints
-   - required follow-up steps, validation, or migrations
+1. Read `spec_context.md` and extract the concrete commitments it makes, regardless of which source document contains them:
+   - required behaviors
+   - design and implementation constraints
+   - required validation, migrations, rollout, or compatibility steps
+   - non-goals and intentionally deferred work
 2. Compare those commitments against the actual implementation in `pr_diff.txt` and the checked-out files.
 3. Treat small implementation-level adjustments as acceptable when they preserve the spec's intent. Do not flag harmless differences in naming, structure, or low-level technique.
 4. Flag a mismatch only when it is material, such as:
-   - required behavior in the product spec is missing
-   - the implementation contradicts a spec decision
+   - required behavior from the approved spec context is missing
+   - the implementation contradicts an approved decision or constraint
    - the change introduces significant unplanned scope
-   - a required validation, migration, or compatibility step from the tech spec is absent
+   - a required validation, migration, rollout, or compatibility step is absent
 
 ## Outputs
 
@@ -46,4 +46,5 @@ Determine whether the implementation in the checked-out PR materially matches th
 
 - Do not require literal one-to-one implementation of the spec when the PR achieves the same outcome safely.
 - Do not speculate about spec details that are not actually present in `spec_context.md`.
+- Evaluate each commitment on its substance regardless of which source document contains it.
 - Do not post to GitHub directly.
