@@ -1,0 +1,2 @@
+timestamp: 2026-07-14T20:33:58Z
+note: Computer Use screenshot artifact smoke test.
