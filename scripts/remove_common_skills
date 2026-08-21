@@ -4,7 +4,10 @@ set -eo pipefail
 
 REPO_ROOT="${WARP_COMMON_SKILLS_TARGET_REPO_ROOT:-$(pwd)}"
 LOCK_FILE=""
-STAMP_RELATIVE_PATH="warp/common-skills-lock.hash"
+LOCK_FILE_NAME="skills-lock.json"
+LABEL="common"
+STAMP_BASENAME="common-skills-lock.hash"
+STAMP_RELATIVE_PATH="warp/${STAMP_BASENAME}"
 CLEAR_LOCK=0
 
 TARGET="${WARP_COMMON_SKILLS_INSTALL_TARGET:-project}"
@@ -28,7 +31,7 @@ project_stamp_file() {
     return
   fi
 
-  echo "${REPO_ROOT}/.agents/skills/.common-skills-lock.hash"
+  echo "${REPO_ROOT}/.agents/skills/.${STAMP_BASENAME}"
 }
 
 project_exclude_file() {
@@ -50,7 +53,7 @@ project_exclude_file() {
 }
 
 global_stamp_file() {
-  echo "${HOME}/.agents/warp/common-skills-lock.hash"
+  echo "${HOME}/.agents/warp/${STAMP_BASENAME}"
 }
 
 stamp_file() {
@@ -134,6 +137,8 @@ Options:
   --project            Remove from this checkout's .agents/skills directory (default).
   --global             Remove from ~/.agents/skills for the current user.
   --clear-lock         Also remove skills-lock.json after removing locked skills.
+  --lock-file <name>   Lockfile name within the repo (default: skills-lock.json).
+  --label <name>       Label used for the stamp and ignore markers (default: common).
   -h, --help           Show this help message.
 
 Environment:
@@ -210,8 +215,8 @@ remove_from_lock() {
 remove_project_common_skills_ignore_block() {
   local exclude_file=""
   local tmp_file=""
-  local marker_start="# BEGIN warp common-skills"
-  local marker_end="# END warp common-skills"
+  local marker_start="# BEGIN warp ${LABEL}-skills"
+  local marker_end="# END warp ${LABEL}-skills"
 
   if ! exclude_file="$(project_exclude_file)"; then
     return 0
@@ -255,6 +260,26 @@ while [[ $# -gt 0 ]]; do
       CLEAR_LOCK=1
       shift
       ;;
+    --lock-file)
+      if [[ -n "${2:-}" ]]; then
+        LOCK_FILE_NAME="$2"
+        shift 2
+      else
+        echo "error: argument for $1 is missing" >&2
+        usage >&2
+        exit 1
+      fi
+      ;;
+    --label)
+      if [[ -n "${2:-}" ]]; then
+        LABEL="$2"
+        shift 2
+      else
+        echo "error: argument for $1 is missing" >&2
+        usage >&2
+        exit 1
+      fi
+      ;;
     -h|--help)
       usage
       exit 0
@@ -271,7 +296,9 @@ if ! REPO_ROOT="$(resolve_repo_root "${REPO_ROOT}")"; then
   echo "error: repo root does not exist: ${REPO_ROOT}" >&2
   exit 1
 fi
-LOCK_FILE="${REPO_ROOT}/skills-lock.json"
+LOCK_FILE="${REPO_ROOT}/${LOCK_FILE_NAME}"
+STAMP_BASENAME="${LABEL}-skills-lock.hash"
+STAMP_RELATIVE_PATH="warp/${STAMP_BASENAME}"
 
 if [[ "${TARGET}" != "project" && "${TARGET}" != "global" ]]; then
   echo "error: invalid common skills removal target: ${TARGET} (expected project or global)" >&2
@@ -289,7 +316,7 @@ if [[ ! -f "${LOCK_FILE}" ]]; then
 fi
 validate_required_commands git node
 
-echo "Removing common agent skills listed in skills-lock.json from $(target_description)."
+echo "Removing ${LABEL} agent skills listed in ${LOCK_FILE_NAME} from $(target_description)."
 remove_from_lock
 if [[ "${CLEAR_LOCK}" -eq 1 ]]; then
   rm -f -- "${LOCK_FILE}"

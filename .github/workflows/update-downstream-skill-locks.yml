@@ -1,4 +1,4 @@
-name: Update downstream common-skills lockfiles
+name: Update downstream skills lockfiles
 
 on:
   push:
@@ -11,18 +11,42 @@ permissions:
 
 jobs:
   update-lockfile:
-    name: Update ${{ matrix.repository }}
+    name: Update ${{ matrix.lock_label }} in ${{ matrix.repository }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
         include:
+          # common-skills lock (skills-lock.json) in each downstream consumer.
           - repository: warpdotdev/warp
             repository_name: warp
             base_branch: master
+            source: warpdotdev/common-skills
+            lock_file: skills-lock.json
+            lock_label: common skills
+            branch_prefix: common-skills-lock
           - repository: warpdotdev/warp-server
             repository_name: warp-server
             base_branch: develop
+            source: warpdotdev/common-skills
+            lock_file: skills-lock.json
+            lock_label: common skills
+            branch_prefix: common-skills-lock
+          # warp-skills lock (warp-skills-lock.json) in each downstream consumer.
+          - repository: warpdotdev/warp
+            repository_name: warp
+            base_branch: master
+            source: warpdotdev/warp-skills
+            lock_file: warp-skills-lock.json
+            lock_label: warp-skills
+            branch_prefix: warp-skills-lock
+          - repository: warpdotdev/warp-server
+            repository_name: warp-server
+            base_branch: develop
+            source: warpdotdev/warp-skills
+            lock_file: warp-skills-lock.json
+            lock_label: warp-skills
+            branch_prefix: warp-skills-lock
     steps:
       - name: Check out common-skills
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -82,8 +106,20 @@ jobs:
       - name: Update target lockfile
         id: update
         run: |
-          common-skills/scripts/update_common_skills_lock --repo-root target
-          if git -C target diff --quiet -- skills-lock.json; then
+          # A consumer that has not adopted this lock (e.g. no warp-skills-lock.json)
+          # has nothing to refresh, so skip cleanly instead of failing the job.
+          if [[ ! -f "target/${{ matrix.lock_file }}" ]]; then
+            echo "::notice::target/${{ matrix.lock_file }} is absent in ${{ matrix.repository }}; nothing to refresh."
+            echo "changed=false" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          common-skills/scripts/update_common_skills_lock \
+            --repo-root target \
+            --source "${{ matrix.source }}" \
+            --lock-file "${{ matrix.lock_file }}"
+          # Detect whether regenerating the lock changed it vs the committed file;
+          # only a real change warrants opening a downstream PR.
+          if git -C target diff --quiet -- "${{ matrix.lock_file }}"; then
             echo "changed=false" >> "${GITHUB_OUTPUT}"
           else
             echo "changed=true" >> "${GITHUB_OUTPUT}"
@@ -96,20 +132,20 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
           path: target
-          add-paths: skills-lock.json
+          add-paths: ${{ matrix.lock_file }}
           base: ${{ matrix.base_branch }}
-          branch: automation/common-skills-lock-${{ github.sha }}
+          branch: automation/${{ matrix.branch_prefix }}-${{ github.sha }}
           delete-branch: true
-          commit-message: Update common skills lock for ${{ steps.source.outputs.label }}
-          title: Update common skills lock for ${{ steps.source.outputs.label }}
+          commit-message: Update ${{ matrix.lock_label }} lock for ${{ steps.source.outputs.label }}
+          title: Update ${{ matrix.lock_label }} lock for ${{ steps.source.outputs.label }}
           body: |
             ## Description
 
-            Updates `skills-lock.json` to distribute the common skills from [${{ steps.source.outputs.label }}](${{ steps.source.outputs.url }}).
+            Updates `${{ matrix.lock_file }}` to distribute the ${{ matrix.lock_label }} from [${{ steps.source.outputs.label }}](${{ steps.source.outputs.url }}).
 
             ## Testing
 
-            Generated with `scripts/update_common_skills_lock`.
+            Generated with `scripts/update_common_skills_lock --source ${{ matrix.source }} --lock-file ${{ matrix.lock_file }}`.
 
       - name: Request source author as reviewer
         if: steps.create-pr.outputs.pull-request-number != '' && steps.source.outputs.author != ''

@@ -4,21 +4,24 @@ set -eo pipefail
 
 REPO_ROOT="$(pwd)"
 LOCK_FILE=""
+LOCK_FILE_NAME="skills-lock.json"
 TEMP_DIR=""
 SKILLS_CLI_VERSION="1.5.6"
-COMMON_SKILLS_SOURCE="warpdotdev/common-skills"
+SKILLS_SOURCE="warpdotdev/common-skills"
 SKILLS_CLI_AGENT="warp"
-COMMON_SKILL_SELECTOR="*"
+SKILL_SELECTOR="*"
 
 usage() {
   cat <<EOF
 Usage: scripts/update_common_skills_lock [options]
 
-Regenerate an existing skills-lock.json from warpdotdev/common-skills.
+Regenerate an existing skills lockfile from a skills source repository.
 
 Options:
-  --repo-root <path>   Repository containing skills-lock.json.
-  -h, --help           Show this help message.
+  --repo-root <path>      Repository containing the lockfile (default: current directory).
+  --source <owner/repo>   Skills source to regenerate from (default: warpdotdev/common-skills).
+  --lock-file <name>      Lockfile name within the repo (default: skills-lock.json).
+  -h, --help              Show this help message.
 EOF
 }
 
@@ -55,6 +58,24 @@ while [[ $# -gt 0 ]]; do
       REPO_ROOT="$2"
       shift 2
       ;;
+    --source)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --source requires an owner/repo." >&2
+        usage >&2
+        exit 1
+      fi
+      SKILLS_SOURCE="$2"
+      shift 2
+      ;;
+    --lock-file)
+      if [[ $# -lt 2 ]]; then
+        echo "error: --lock-file requires a filename." >&2
+        usage >&2
+        exit 1
+      fi
+      LOCK_FILE_NAME="$2"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -74,32 +95,34 @@ if ! REPO_ROOT="$(cd "${REPO_ROOT}" && pwd)"; then
   exit 1
 fi
 
-LOCK_FILE="${REPO_ROOT}/skills-lock.json"
+LOCK_FILE="${REPO_ROOT}/${LOCK_FILE_NAME}"
 if [[ ! -f "${LOCK_FILE}" ]]; then
   echo "error: missing skills lock file: ${LOCK_FILE}" >&2
   exit 1
 fi
 
 trap cleanup EXIT
-TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/common-skills-lock.XXXXXX")"
+TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/skills-lock.XXXXXX")"
+# The skills CLI reads and writes a file literally named skills-lock.json in its
+# working directory, so seed the temp dir with the consumer's lock under that name.
 cp "${LOCK_FILE}" "${TEMP_DIR}/skills-lock.json"
 git -C "${TEMP_DIR}" init --quiet
 
 if ! (
   cd "${TEMP_DIR}"
-  npx --yes "skills@${SKILLS_CLI_VERSION}" add "${COMMON_SKILLS_SOURCE}" -a "${SKILLS_CLI_AGENT}" -s "${COMMON_SKILL_SELECTOR}" -y --copy
+  npx --yes "skills@${SKILLS_CLI_VERSION}" add "${SKILLS_SOURCE}" -a "${SKILLS_CLI_AGENT}" -s "${SKILL_SELECTOR}" -y --copy
 ) < /dev/null; then
-  echo "error: failed to generate an updated skills-lock.json from ${COMMON_SKILLS_SOURCE}." >&2
+  echo "error: failed to generate an updated ${LOCK_FILE_NAME} from ${SKILLS_SOURCE}." >&2
   exit 1
 fi
 
 if [[ ! -f "${TEMP_DIR}/skills-lock.json" ]]; then
-  echo "error: common skills update did not produce a candidate skills-lock.json." >&2
+  echo "error: skills update did not produce a candidate lockfile from ${SKILLS_SOURCE}." >&2
   exit 1
 fi
 
 if cmp -s "${LOCK_FILE}" "${TEMP_DIR}/skills-lock.json"; then
-  echo "skills-lock.json is already up to date."
+  echo "${LOCK_FILE_NAME} is already up to date."
   exit 0
 fi
 
