@@ -14,6 +14,7 @@ This guide covers best practices for creating pull requests in the warp reposito
 - `fix-errors` - Fix presubmit failures (formatting, linting, tests) before opening PR
 - `warp-integration-test` - Add or update integration coverage for user-visible flows, regressions, and P0 use cases
 - `add-feature-flag` - Gate changes behind feature flags
+- `upload-screenshot` - Capture a screenshot with computer use, upload to a stable host, and embed it in the PR description or post to Slack
 
 ## Pre-PR Checklist
 
@@ -212,6 +213,16 @@ Your PR summary under the "Description" section should include:
 1. **What** - What changes are being made
 2. **Why** - Why these changes are necessary (link to Linear task if applicable)
 3. **How** - Brief explanation of the approach taken
+
+### Visual Evidence for UI Changes
+
+For any change that affects rendered output (layout, colors, borders, new components, rendering bug fixes), include visual evidence in the PR description:
+
+- If the user has explicitly requested a screenshot, or the change is clearly user-visible: use the `upload-screenshot` skill to capture, upload, and embed the image before opening the PR.
+- If ambiguous (e.g. an internal refactor that may have visual side-effects): ask the user — *"This touches [component]. Should I capture a screenshot before opening the PR?"*
+- If the change has no visible output (refactors, logic, CI): skip visual evidence.
+
+Add a `### Screenshots / Videos` section to the PR description with the embedded image(s). See the `upload-screenshot` skill for the upload and embedding workflow.
 
 ## After Opening the PR
 
