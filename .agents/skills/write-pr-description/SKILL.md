@@ -58,10 +58,9 @@ Gather what the diff cannot tell the reviewer:
 
 ## 2. Follow the repository's template
 
-Look for `.github/pull_request_template.md`, then `.github/PULL_REQUEST_TEMPLATE.md`,
-then `.github/PULL_REQUEST_TEMPLATE/` (a directory means several templates, so pick the
-one matching the change), then a root-level `pull_request_template.md`. Templates differ
-per repository, so check every time rather than reusing the shape from your last PR.
+Check the repository for a PR template. Where there are several, pick the one matching
+the change. Templates differ per repository, so check every time rather than reusing the
+shape from your last PR.
 
 **The template's own instructions outrank this skill.** A template that says "remove this
 section if it is not relevant" is telling you what this repository's reviewers want.
@@ -207,7 +206,9 @@ Then take each paragraph and name the decision it helps the reviewer make. If yo
 name one, delete it. The usual finds:
 
 - Anything the diff shows at a glance. "The hash-scroll logic was generalized", "the
-  field was renamed", one bullet per changed line, a restatement of the lockfile.
+  field was renamed", one bullet per changed line, a restatement of the lockfile. The
+  exception is something that looks unintended, such as a name that disagrees with what
+  it binds to. The reviewer can see it but cannot tell it is wrong, so it stays.
 - Paraphrases of comments this diff adds. The reviewer reads them in place, one scroll
   away.
 - Inventories of the tests you added. Name what is *not* covered, and roughly how much of

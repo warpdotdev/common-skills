@@ -1,4 +1,4 @@
-# Writing reviewer guidance
+# Writing guides for reviewers
 
 A review guide says where to start and where to concentrate. The author knows which parts
 were hard; the reviewer does not. That gap is the whole value.
@@ -64,6 +64,17 @@ is not a focus area.
 call you made, why you think it is right, and what you are unsure about. This applies to
 agent-authored changes too: if you inferred an intent that is written down nowhere, that
 inference is exactly what needs a human.
+
+**Discrepancies that look unintended.** A name, a value, or a comment that does not match
+its surroundings. A resource named for one group but bound to another. A comment claiming
+parity with a setting that is ten times different. A threshold that disagrees with the
+constant it derives from.
+
+These are visible in the diff, and that is exactly why they get missed: nothing marks
+them as wrong, so a reviewer reads them as intended. You are usually the only person who
+knows whether it was deliberate. Say which you think it is, and ask. Do not suppress one
+because the reviewer could technically have spotted it, and do not quietly fix an
+unrelated one either, since that buries it in the diff.
 
 **Security-relevant surfaces.** Authentication, authorization, tenancy, secrets, network
 exposure, user data. Say what the change permits that was not permitted before, and who
