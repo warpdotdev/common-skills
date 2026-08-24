@@ -115,9 +115,11 @@ Then give the substance:
   alternative, state the decision plainly. Do not manufacture one to fill the slot.
 - Include visual evidence for a user-visible change: a screenshot, or before and after
   where the change is a modification. Reference only captures that exist.
-- Link the issue, spec, or conversation once. Where there is none, say so in three words.
-  An agent under instruction to link something risks inventing a plausible ticket ID, and
-  a wrong link costs more than no link.
+- Link the issue, spec, or conversation once. Where there is none, say so only if the
+  repository asks for one, through a template section or a contributing guide.
+  Announcing "no linked issue" in a repository that does not use them is lint compliance
+  rather than information. Never invent a plausible ticket ID to fill the gap; a wrong
+  link costs more than no link.
 
 ### Validation
 
@@ -162,6 +164,10 @@ Put it high, directly after the summary. A reviewer should not have to scroll pa
 compliance checklists to find where to start. `## Review guide` is a reasonable default
 heading when the template does not supply one.
 
+On a small PR, guidance is a sentence or two, not a section. Fold it into the opening
+rather than raising a heading over it. A heading on two paragraphs is ceremony, and so is
+a reading order for six files.
+
 A review guide contains some or all of:
 
 - A recommended reading order, for PRs large enough that the order matters.
@@ -174,29 +180,50 @@ opens with a short map of which of its sections you need.
 
 ## 5. Cut
 
-Drafts run long. This pass matters more than any other single step, because an
-over-explained description buries the two sentences worth reading. Delete:
+Drafts run long, and the excess is almost never in the thinking. It collects in the parts
+that feel obligatory: the checklist answers, the inventory of tests, the second statement
+of something you already said. Those parts are also the easiest to delete, which makes
+this pass cheap and worth doing every time.
+
+Rough anchors for the whole body, before you start cutting:
+
+- A test-only, config, or mechanical change with no behavior change: a short paragraph.
+- A small change with a real risk surface: a few hundred words, nearly all of them about
+  the risk rather than the diff.
+- A focused fix or feature: four or five hundred words.
+- A new mechanism with consumers: under a thousand.
+- A very large or foundational change: around a thousand, with most of the extra spent on
+  the reading order and the focus areas.
+
+These are anchors, not limits. Being over one means look harder at the list below; it
+never means cut a decision.
+
+Then take each paragraph and name the decision it helps the reviewer make. If you cannot
+name one, delete it. The usual finds:
 
 - Anything the diff shows at a glance. "The hash-scroll logic was generalized", "the
-  field was renamed", one bullet per changed line. The reviewer has the diff.
-- Explanations of how standard tools work. Terraform's destroy-and-recreate, what a
-  migration is, when a React effect fires, how a test macro polls. Explain this change,
-  not the reviewer's tools.
-- Paraphrases of comments the diff already adds. The reviewer reads them in place.
+  field was renamed", one bullet per changed line, a restatement of the lockfile.
+- Paraphrases of comments this diff adds. The reviewer reads them in place, one scroll
+  away.
+- Inventories of the tests you added. Name what is *not* covered, and roughly how much of
+  the change is tested. A list of test function names reads as padding, especially with
+  no result attached to it.
+- Explanations of how standard tools behave. Terraform replacing a renamed resource, how
+  a test macro polls, when a React effect fires, how a library spawns a child process.
+  Explain this change, not the reviewer's tools.
+- The second statement of a fact. Count them: "no linked issue" and "nothing was run"
+  each belong in exactly one place, and a fact worth stating twice is usually a fact
+  stated badly the first time.
+- Sentences whose only job is to point at another part of the description. Cross
+  references inside one page mean the content is in the wrong place.
 - Sentences about the description itself. "A review guide is included because this change
   has a wide blast radius." Write the guide; do not justify it.
-- Repetition. Say each fact once, in the section where a reviewer looks for it. "No
-  linked issue" belongs in exactly one place.
+- Commit trailers. `Co-Authored-By` belongs in the commit, not in the PR body.
 
 Keep, even when cutting hard: the motivation, the behavior changes, the decisions and
 their rejected alternatives, the open questions, and the blast radius. These are the
-reason the description exists. When something has to go, cut description of mechanism
-before you cut a decision.
-
-Length tracks what the reviewer must decide. A two-line change to a permission grant
-earns real prose about what it now permits. A thousand-line mechanical rename earns two
-sentences and a note that it is mechanical. A test-only change with no behavior change
-rarely earns more than a short paragraph, however subtle the race it fixes.
+reason the description exists. When something has to go, cut mechanism before you cut a
+decision.
 
 ## 6. Self-check
 
@@ -204,6 +231,9 @@ rarely earns more than a short paragraph, however subtle the race it fixes.
 - Does every claim about testing describe something that ran, or say plainly that it did
   not?
 - Have you verified every factual claim carried over from a commit message?
+- Did the cut take a decision, a rejected alternative, or an open question with it? Those
+  are the first things to go when you compress, and the last things you should lose. Put
+  them back.
 - Does the description match the branch as it stands now, rather than the path you took
   to get there?
 - If there is reviewer guidance, is it near the top?
