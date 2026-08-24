@@ -33,6 +33,7 @@ Each skill lives in its own directory under `.agents/skills/`. The only required
 ### Development workflow
 
 - `create-pr` — guidance for preparing and opening pull requests.
+- `write-pr-description` — writes the PR body: template sections, plain-language prose, and reviewer guidance.
 - `diagnose-ci-failures` — workflow for inspecting GitHub CI failures and producing a fix plan.
 - `fix-errors` — guidance for fixing build, lint, formatting, and test failures.
 - `resolve-merge-conflicts` — workflow and helper script for resolving git conflicts with compact context.

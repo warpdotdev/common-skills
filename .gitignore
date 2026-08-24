@@ -2,3 +2,6 @@ __pycache__/
 *.py[cod]
 *.pyo
 .DS_Store
+
+# Skill eval workspaces produced by the create-skill harness
+*-workspace/

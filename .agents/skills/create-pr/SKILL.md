@@ -11,6 +11,7 @@ This guide covers best practices for creating pull requests in the warp reposito
 
 ## Related Skills
 
+- `write-pr-description` - Write the PR body itself: template sections, prose, and reviewer guidance
 - `fix-errors` - Fix presubmit failures (formatting, linting, tests) before opening PR
 - `warp-integration-test` - Add or update integration coverage for user-visible flows, regressions, and P0 use cases
 - `add-feature-flag` - Gate changes behind feature flags
@@ -207,11 +208,9 @@ Use the `warp-integration-test` skill for implementation details, test registrat
 
 ## PR Description Guidelines
 
-Your PR summary under the "Description" section should include:
-
-1. **What** - What changes are being made
-2. **Why** - Why these changes are necessary (link to Linear task if applicable)
-3. **How** - Brief explanation of the approach taken
+Use the `write-pr-description` skill for the body itself. It covers following the
+repository's template, the prose baseline, and when to add a reading order and focus
+areas for the reviewer.
 
 ## After Opening the PR
 

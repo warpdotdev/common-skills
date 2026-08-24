@@ -1,0 +1,141 @@
+{
+  "skill_name": "write-pr-description",
+  "notes": "Each eval regenerates a PR description blind: the agent works from the diff, the commits, and the repository, and must not read the existing PR body, its review comments, or any linked conversation. Evals 1-4 are the tuning set. The real descriptions on these PRs are the reference points when judging output, not a target to reproduce.",
+  "evals": [
+    {
+      "id": 1,
+      "name": "small-iam-grant",
+      "prompt": "Write the PR description for warpdotdev/warp-terraform#1453. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A short description in the repository's fallback shape, since warp-terraform has no PR template. It explains what the new role permits that the previous one did not, and confirms the grant is scoped to staging. Despite the two-line diff it treats the permission change as the thing under review. It does not pad, and it does not claim validation that was not run.",
+      "files": [],
+      "assertions": [
+        "Uses a sensible section shape (such as Why / What changed / Validation) rather than inventing headings from another repository's template, because warp-terraform has no PR template.",
+        "States what the new IAM role allows that the previous role did not.",
+        "States that the change is scoped to staging and does not affect production.",
+        "Treats the permission grant as the review surface even though the diff is two lines.",
+        "Stays short: no padding, no restatement of the diff line by line.",
+        "Any validation described is presented as something to run or as a fact, and is not fabricated as a completed result."
+      ]
+    },
+    {
+      "id": 2,
+      "name": "focused-bugfix",
+      "prompt": "Write the PR description for warpdotdev/warp#15396. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A description following the warp PR template, explaining why a fresh SDK process has no configured MCP execution path and why inheriting the process PATH is safe there. It names the per-execution-mode decision and the alternative, handles the machine-read CHANGELOG block correctly, and does not tick the manual-testing box falsely.",
+      "files": [],
+      "assertions": [
+        "Follows the warp template headings (Description, Linked Issue, Testing, Agent Mode) in the template's order.",
+        "Explains the root cause: the fresh SDK/CLI process has no mcp_execution_path because no terminal session has bootstrapped one.",
+        "Names the decision about which execution modes may fall back to inheriting the process PATH, and gives the reasoning.",
+        "Handles the CHANGELOG block deliberately: either supplies a CHANGELOG-BUG-FIX entry or explicitly opts out, rather than dropping the block.",
+        "Does not tick the manual-testing checkbox without a supporting statement.",
+        "Contains no narration of the branch's own review history or earlier revisions."
+      ]
+    },
+    {
+      "id": 3,
+      "name": "ui-readonly-row",
+      "prompt": "Write the PR description for warpdotdev/warp-server#15736. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A description following the warp-server template, with the What and Why sections filled in and the gate checklists answered honestly (no new APIs, no new tables, no prompt changes, no breaking changes). It notes that the change is user-visible and that screenshots belong in the PR, without fabricating them or the test results.",
+      "files": [],
+      "assertions": [
+        "Follows the warp-server template headings (What, Why, the gate checklists, Testing, Agent Mode).",
+        "Answers each gate checklist rather than deleting the sections, and does not claim a new API, table, prompt change, or breaking change that the diff does not contain.",
+        "Explains the user-visible improvement, not just the components touched.",
+        "Recognizes that a UI change calls for a screenshot or recording, and does not invent one.",
+        "Describes only validation that was actually run, without inventing test counts or results.",
+        "Does not enumerate the changed files one by one as a substitute for explanation."
+      ]
+    },
+    {
+      "id": 4,
+      "name": "authz-field-diff",
+      "prompt": "Write the PR description for warpdotdev/warp-server#15607. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A description following the warp-server template that explains the tag-driven field permission mechanism before its application to the factory patch endpoint, names the behavior changes, and includes reviewer guidance: a reading order that starts at the mechanism, and focus areas covering the permission policy encoded in the struct tags and the decisions the author is least certain about.",
+      "files": [],
+      "assertions": [
+        "Follows the warp-server template headings.",
+        "Explains the field-level permission mechanism before describing its use by the factory endpoint.",
+        "Includes a recommended reading order that starts with the new mechanism rather than with the handler or the tests.",
+        "Scopes the change honestly: notes which added surfaces have no production caller yet, so the reviewer does not judge them against the wrong standard.",
+        "Names at least one genuine open question, risky assumption, or one-way door, with enough specificity that a reviewer knows where to look.",
+        "Names the behavior changes that fall out of the change, including permission requirements that differ from before.",
+        "Assumes a competent reviewer: no generic instructions about checking tests or error handling.",
+        "Does not restate the diff file by file across 19 files."
+      ]
+    },
+    {
+      "id": 5,
+      "name": "tiny-flake-fix",
+      "prompt": "Write the PR description for warpdotdev/warp#15394. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A short description following the warp template. It explains why the test is flaky rather than only that it is, and it stays proportionate to a two-line test-only change. No review guide, because there is nothing to guide.",
+      "files": [],
+      "assertions": [
+        "Follows the warp template headings.",
+        "Explains the cause of the flake, not just the symptom.",
+        "States that the change is test-only and touches no production behavior.",
+        "Stays proportionate to a two-line diff and does not include a reading order or focus areas.",
+        "Handles the CHANGELOG block deliberately, most likely by opting out."
+      ]
+    },
+    {
+      "id": 6,
+      "name": "staging-network-rule",
+      "prompt": "Write the PR description for warpdotdev/warp-terraform#1449. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A description in the fallback shape that explains why a self-request from the server is rejected by the staging IP allowlist, what is now routed around it, and how the exposure is bounded. The security framing is the point: what is now reachable that was not, and what limits it.",
+      "files": [],
+      "assertions": [
+        "Uses a sensible section shape, since warp-terraform has no PR template.",
+        "Explains why the request fails today before describing the fix.",
+        "States precisely what path is now exempted and what remains behind the allowlist.",
+        "Describes the bound on the new exposure, such as the rate limit and the exact-path match.",
+        "Reports validation honestly: either the plan output if it was run, or a plain statement that it was not, without predicting plan contents as though they had been observed."
+      ]
+    },
+    {
+      "id": 7,
+      "name": "cloud-interconnect",
+      "prompt": "Write the PR description for warpdotdev/warp-terraform#1409. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A description in the fallback shape explaining the AWS half of a cross-cloud bridge, the resources it creates, and the non-obvious dependency choice of a second Terraform provider, with the reason that choice was forced.",
+      "files": [],
+      "assertions": [
+        "Explains the purpose of the bridge and how this change relates to the half that already exists.",
+        "Describes the resources created in terms of their role, not as a list of Terraform addresses.",
+        "Calls out the use of a second Terraform provider and why the primary provider was not sufficient.",
+        "Notes that this is staging.",
+        "Keeps the prose in active voice with short sentences."
+      ]
+    },
+    {
+      "id": 8,
+      "name": "wip-branch-no-pr",
+      "prompt": "I'm getting ready to put up the branch in /Users/ben/src/warp-server for review. Write the PR description for it. Treat that checkout as strictly read-only: do not check out, stash, commit, or modify anything there. There is no PR yet, so work from the branch itself.",
+      "expected_output": "A description following the warp-server template, drafted from the branch rather than from an existing PR. It accounts for the specs committed on the branch, notes the uncommitted work rather than silently describing it as landed, and includes reviewer guidance appropriate to a change of this size.",
+      "files": [],
+      "assertions": [
+        "Works from the local branch and its base without requiring an existing PR.",
+        "Leaves the checkout untouched: no checkout, stash, commit, or file modification in that repository.",
+        "Uses the specs committed on the branch as source material for the motivation.",
+        "Distinguishes committed work from uncommitted work rather than describing everything as done.",
+        "Includes a reading order and focus areas appropriate to a change of this size.",
+        "Follows the warp-server template headings."
+      ]
+    },
+    {
+      "id": 9,
+      "name": "xl-foundation-slice",
+      "prompt": "Write the PR description for warpdotdev/warp-server#13839. Work from the diff and the commits only - do not read the current PR body or any of its comments. Give me the description text, ready to paste.",
+      "expected_output": "A description for a very large foundational change that states what is deliberately out of scope, gives a dependency-ordered reading order, and concentrates on the decisions a reviewer must ratify: the storage and deletion contracts, the authorization boundary, and the parts that are hard to change once data exists.",
+      "files": [],
+      "assertions": [
+        "States the scope boundary: what this change lands and what it deliberately defers.",
+        "Includes a dependency-ordered reading order that starts with the schema or the core contract.",
+        "Identifies the one-way doors, such as the persisted schema and the manifest format, as focus areas.",
+        "Calls out the authorization boundary and who can reach the data.",
+        "Names generated and mechanical files as skimmable.",
+        "Contains no narration of the branch's own review history, rework passes, or prior versions of the description.",
+        "Remains navigable: the reader can find the reading order and focus areas without scrolling through undifferentiated prose."
+      ]
+    }
+  ]
+}
