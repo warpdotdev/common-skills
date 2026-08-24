@@ -92,6 +92,9 @@ you:
 3. `## What changed`
 4. `## Validation`
 
+This shape collapses on a small change. A heading over a single line is the same ceremony
+step 4 warns about, so drop any section that would hold one and let the opening carry it.
+
 ## 3. Write the body
 
 Open with one to three sentences covering what the change does and why. A reviewer who
@@ -125,7 +128,9 @@ Then give the substance:
 
 You normally ran the work, so report it: the command and what it showed.
 
-When you did not, say which of these applies, once, in the validation section:
+Where you did not, or only partly did, these are the honest shapes. More than one can
+apply at once: you may have verified a fact yourself and still be waiting on CI for the
+rest.
 
 - **Nothing ran.** State it plainly and name the command the reviewer or CI should run.
 - **CI produces the result**, because the check needs credentials or an environment you
@@ -141,8 +146,8 @@ When you did not, say which of these applies, once, in the validation section:
 - **Someone else recorded the result**, such as a verification noted in an earlier commit.
   Attribute it or leave it out. Never restate it as your own observation.
 
-Say it once. Repeating "this was not run" in three sections reads as hedging, and buries
-the one line that says what to run instead.
+Whichever apply, state each once. Repeating "this was not run" in three sections reads as
+hedging, and buries the one line that says what to run instead.
 
 Never write intent as though it were a result.
 
