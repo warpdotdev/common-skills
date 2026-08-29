@@ -9,12 +9,13 @@ This file is the single source of truth for harness support in `skill-doctor`. R
 | Warp | `warp` | Read-only Warp conversation databases |
 | Claude Code | `claude` | Project-history JSONL |
 | Codex | `codex` | Rollout JSONL |
+| OpenCode | `opencode` | Read-only current-format SQLite history |
 
 At startup, identify the harness executing the skill from the runtime context. Do not infer it from conversation files found on disk.
 
 If the executing harness is not listed above, or cannot be identified confidently, stop before creating a report directory or reading conversation history. Tell the user:
 
-> skill-doctor currently supports Warp, Claude Code, and Codex. This run appears to be using an unsupported harness, so no conversations were read.
+> skill-doctor currently supports Warp, Claude Code, Codex, and OpenCode. This run appears to be using an unsupported harness, so no conversations were read.
 
 ## Collector source selection
 
@@ -27,6 +28,8 @@ Harness-specific source overrides:
 
 - `--claude-home PATH` — nonstandard Claude Code configuration directory.
 - `--codex-home PATH` — nonstandard Codex home.
+- `--opencode-data-dir PATH` — nonstandard OpenCode data root. The default is `$XDG_DATA_HOME/opencode`, or `~/.local/share/opencode` when `XDG_DATA_HOME` is unset.
+- `--opencode-db PATH` — explicit OpenCode database, including an `OPENCODE_DB` path; repeatable and replaces default `opencode.db`/`opencode-*.db` discovery. Relative paths resolve under the OpenCode data root.
 - `--warp-db PATH` — explicit Warp database; repeatable.
 - `--warp-data-dir PATH` — nonstandard Warp channel-data directory.
 

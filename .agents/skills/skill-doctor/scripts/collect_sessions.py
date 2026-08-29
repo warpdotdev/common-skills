@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Collect local Claude Code, Codex, and Warp sessions and skills for scoring.
+"""Collect local Claude Code, Codex, OpenCode, and Warp sessions and skills for scoring.
 
-Scans Claude Code project history, Codex rollout files, and/or Warp's local
-conversation databases, discovers installed skills, detects which sessions
+Scans Claude Code project history, Codex rollout files, OpenCode databases,
+and/or Warp's local conversation databases, discovers installed skills, detects
+which sessions
 used which skills, and emits:
 
   <out>/inventory.json        - skills, per-session stats, sampling decisions
@@ -25,6 +26,7 @@ from warp_decoder import ProtobufDecodeError, decode_task
 
 MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_WARP_CONVERSATION_BYTES = 32 * 1024 * 1024
+MAX_OPENCODE_WARNINGS = 10
 MAX_MSG_CHARS = 1500
 MAX_TOOL_CHARS = 500
 MAX_TRANSCRIPT_ENTRIES = 160
@@ -33,13 +35,14 @@ TRANSCRIPT_TAIL = 40
 
 CODE_EDIT_HINTS = ("apply_patch", "*** Begin Patch", "edit_file", "create_file", "str_replace", "write_file")
 CLAUDE_CODE_EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
+OPENCODE_CODE_EDIT_TOOLS = {"apply_patch", "edit", "patch", "write"}
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--harness",
-        choices=("auto", "all", "claude", "codex", "warp"),
+        choices=("auto", "all", "claude", "codex", "opencode", "warp"),
         default="auto",
         help="session source (default: auto; scans every locally available source)",
     )
@@ -49,6 +52,16 @@ def parse_args():
         help="Claude Code config directory (default: CLAUDE_CONFIG_DIR or ~/.claude)",
     )
     p.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", "~/.codex"))
+    p.add_argument(
+        "--opencode-db",
+        action="append",
+        default=[],
+        help="explicit OpenCode database path (repeatable; replaces discovery)",
+    )
+    p.add_argument(
+        "--opencode-data-dir",
+        help="OpenCode data root (default: $XDG_DATA_HOME/opencode or ~/.local/share/opencode)",
+    )
     p.add_argument(
         "--warp-db",
         action="append",
@@ -488,6 +501,586 @@ def parse_sqlite_timestamp(value):
     return parsed.astimezone(timezone.utc)
 
 
+def opencode_data_root(value=None):
+    if value:
+        return Path(value).expanduser()
+    xdg_data = Path(os.environ.get("XDG_DATA_HOME", Path.home() / ".local" / "share"))
+    return xdg_data / "opencode"
+
+
+def opencode_database_identity(path):
+    stat = path.stat()
+    return hashlib.sha1(f"{stat.st_dev}:{stat.st_ino}".encode()).hexdigest()[:12]
+
+
+def discover_opencode_databases(explicit_paths=(), data_dir=None, rejected=None):
+    """Find current OpenCode databases; explicit paths replace discovery."""
+    root = opencode_data_root(data_dir)
+    if explicit_paths:
+        candidates = []
+        for value in explicit_paths:
+            if value == ":memory:":
+                if rejected is not None:
+                    rejected.append((value, "in-memory databases are unsupported"))
+                continue
+            candidate = Path(value).expanduser()
+            candidates.append(
+                candidate if candidate.is_absolute() else root / candidate
+            )
+    else:
+        candidates = [root / "opencode.db"]
+        if root.is_dir():
+            candidates.extend(root.glob("opencode-*.db"))
+
+    databases = []
+    seen = set()
+    for candidate in candidates:
+        try:
+            resolved = candidate.resolve()
+            stat = resolved.stat()
+            identity = (stat.st_dev, stat.st_ino)
+        except OSError as exc:
+            if explicit_paths and rejected is not None:
+                rejected.append((str(candidate), exc.strerror or str(exc)))
+            continue
+        if not resolved.is_file():
+            if explicit_paths and rejected is not None:
+                rejected.append((str(candidate), "not a file"))
+            continue
+        if identity in seen:
+            continue
+        seen.add(identity)
+        databases.append(resolved)
+    return sorted(databases)
+
+
+def open_opencode_database(path):
+    connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True, timeout=2)
+    connection.row_factory = sqlite3.Row
+    connection.execute("PRAGMA query_only = ON")
+    connection.execute("PRAGMA busy_timeout = 2000")
+    return connection
+
+
+def opencode_database_has_current_schema(connection):
+    tables = {
+        row["name"]
+        for row in connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' "
+            "AND name IN ('session', 'message', 'part', 'session_message')"
+        )
+    }
+    if "session" not in tables or not {"id"}.issubset(
+        sqlite_table_columns(connection, "session")
+    ):
+        return False
+    message_parts = (
+        {"message", "part"}.issubset(tables)
+        and {"id", "session_id", "data"}.issubset(
+            sqlite_table_columns(connection, "message")
+        )
+        and {"id", "message_id", "data"}.issubset(
+            sqlite_table_columns(connection, "part")
+        )
+    )
+    session_messages = "session_message" in tables and {
+        "session_id",
+        "type",
+        "seq",
+        "data",
+    }.issubset(sqlite_table_columns(connection, "session_message"))
+    return message_parts or session_messages
+
+
+def opencode_ms(value):
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    try:
+        return datetime.fromtimestamp(value / 1000, tz=timezone.utc)
+    except (OSError, OverflowError, ValueError):
+        return None
+
+
+def opencode_payload_times(value, inside_time=False):
+    times = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            in_time = inside_time or key == "time"
+            if in_time and key in {"created", "updated", "completed", "ran", "pruned"}:
+                parsed = opencode_ms(child)
+                if parsed:
+                    times.append(parsed)
+            times.extend(opencode_payload_times(child, in_time))
+    elif isinstance(value, list):
+        for child in value:
+            times.extend(opencode_payload_times(child, inside_time))
+    return times
+
+
+def opencode_text(value):
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    return json.dumps(value, ensure_ascii=False, sort_keys=True)
+
+
+def opencode_tool_content_text(content):
+    parts = []
+    if not isinstance(content, list):
+        return parts
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") == "text" and isinstance(item.get("text"), str):
+            parts.append(item["text"])
+        elif item.get("type") == "file" and isinstance(item.get("uri"), str):
+            parts.append(item["uri"])
+    return parts
+
+
+def opencode_skill_from_tool(tool, state):
+    if (tool.get("tool") or tool.get("name")) != "skill":
+        return None
+    tool_input = state.get("input")
+    if isinstance(tool_input, dict) and isinstance(tool_input.get("name"), str):
+        return tool_input["name"]
+    if state.get("status") != "completed":
+        return None
+    metadata = []
+    metadata.append(state.get("metadata"))
+    for value in (state.get("result"), state.get("structured")):
+        if isinstance(value, dict):
+            metadata.append(value.get("metadata"))
+    provider = tool.get("provider")
+    if isinstance(provider, dict):
+        metadata.append(provider.get("resultMetadata"))
+    for value in metadata:
+        if not isinstance(value, dict):
+            continue
+        candidates = [value.get("name")]
+        candidates.extend(
+            nested.get("name") for nested in value.values() if isinstance(nested, dict)
+        )
+        found = next((name for name in candidates if isinstance(name, str)), None)
+        if found:
+            return found
+    return None
+
+
+def opencode_message_part_rows(connection, session_id, warn):
+    """Adapt shipped message/part rows to the existing normalized decoder."""
+    message_columns = sqlite_table_columns(connection, "message")
+    part_columns = sqlite_table_columns(connection, "part")
+    if not {"id", "session_id", "data"}.issubset(message_columns) or not {
+        "id",
+        "message_id",
+        "data",
+    }.issubset(part_columns):
+        return False, []
+    message_created = "time_created" if "time_created" in message_columns else "NULL"
+    message_updated = "time_updated" if "time_updated" in message_columns else "NULL"
+    messages = connection.execute(
+        f"""
+        SELECT id, data, {message_created} AS time_created,
+               {message_updated} AS time_updated
+        FROM message
+        WHERE session_id = ?
+        ORDER BY time_created ASC, id ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    if not messages:
+        return False, []
+
+    part_created = "time_created" if "time_created" in part_columns else "NULL"
+    part_updated = "time_updated" if "time_updated" in part_columns else "NULL"
+    parts = connection.execute(
+        f"""
+        SELECT id, message_id, data, {part_created} AS time_created,
+               {part_updated} AS time_updated
+        FROM part
+        WHERE message_id IN (SELECT id FROM message WHERE session_id = ?)
+        ORDER BY message_id ASC, id ASC
+        """,
+        (session_id,),
+    ).fetchall()
+    parts_by_message = {}
+    for part in parts:
+        parts_by_message.setdefault(part["message_id"], []).append(part)
+
+    structural = {
+        "compaction",
+        "file",
+        "patch",
+        "reasoning",
+        "retry",
+        "snapshot",
+        "step-finish",
+        "step-start",
+        "subtask",
+    }
+    rows = []
+    for message in messages:
+        try:
+            info = json.loads(message["data"])
+        except (json.JSONDecodeError, TypeError):
+            rows.append(
+                {
+                    "type": "assistant",
+                    "seq": message["id"],
+                    "data": message["data"],
+                    "time_created": message["time_created"],
+                    "time_updated": message["time_updated"],
+                }
+            )
+            continue
+        if not isinstance(info, dict):
+            warn(f"session {session_id} has non-object message data at {message['id']}")
+            continue
+
+        role = info.get("role")
+        content = []
+        part_times = []
+        for part in parts_by_message.get(message["id"], []):
+            part_times.extend((part["time_created"], part["time_updated"]))
+            try:
+                data = json.loads(part["data"])
+            except (json.JSONDecodeError, TypeError):
+                warn(f"session {session_id} has malformed part JSON at {part['id']}")
+                continue
+            if not isinstance(data, dict):
+                warn(f"session {session_id} has non-object part data at {part['id']}")
+                continue
+            part_type = data.get("type")
+            if part_type == "text":
+                text = data.get("text")
+                if isinstance(text, str) and text.strip() and not data.get("ignored"):
+                    content.append(data)
+            elif part_type == "tool":
+                state = data.get("state")
+                if isinstance(state, dict) and state.get("status") in {
+                    "completed",
+                    "error",
+                }:
+                    content.append(data)
+                elif not isinstance(state, dict) or state.get("status") not in {
+                    "pending",
+                    "running",
+                }:
+                    warn(
+                        f"session {session_id} has unknown or malformed tool state at {part['id']}"
+                    )
+            elif part_type not in structural:
+                warn(
+                    f"session {session_id} has unknown part type {part_type!r} at {part['id']}"
+                )
+
+        payload = dict(info)
+        if role == "user":
+            payload["text"] = "\n".join(
+                item["text"] for item in content if item.get("type") == "text"
+            )
+        elif role == "assistant":
+            payload["content"] = content
+        updated_values = [
+            value
+            for value in [message["time_updated"]] + part_times
+            if value is not None
+        ]
+        rows.append(
+            {
+                "type": role,
+                "seq": message["id"],
+                "data": json.dumps(payload, ensure_ascii=False),
+                "time_created": message["time_created"],
+                "time_updated": max(updated_values) if updated_values else None,
+            }
+        )
+    return True, rows
+
+
+def parse_opencode_session(connection, database, session, include_subagents, warn):
+    """Normalize one current OpenCode SQLite session."""
+    is_child = bool(session["parent_id"])
+    if is_child and not include_subagents:
+        return None
+
+    uses_message_parts, rows = opencode_message_part_rows(
+        connection, session["id"], warn
+    )
+    if not uses_message_parts:
+        message_columns = sqlite_table_columns(connection, "session_message")
+        if {"session_id", "type", "seq", "data"}.issubset(message_columns):
+            created = "time_created" if "time_created" in message_columns else "NULL"
+            updated = "time_updated" if "time_updated" in message_columns else "NULL"
+            rows = connection.execute(
+                f"""
+                SELECT type, seq, data, {created} AS time_created,
+                       {updated} AS time_updated
+                FROM session_message
+                WHERE session_id = ?
+                ORDER BY seq ASC
+                """,
+                (session["id"],),
+            ).fetchall()
+
+    stats = {
+        "user_turns": 0,
+        "assistant_turns": 0,
+        "tool_calls": 0,
+        "repeated_tool_calls": 0,
+        "error_outputs": 0,
+    }
+    entries = []
+    seen_calls = {}
+    skills_used = set()
+    tool_evidence = []
+    times = [
+        parsed
+        for value in (session["time_created"], session["time_updated"])
+        if (parsed := opencode_ms(value))
+    ]
+    has_code_edits = any(
+        session[name] not in (None, 0, "", "[]")
+        for name in (
+            "summary_additions",
+            "summary_deletions",
+            "summary_files",
+            "summary_diffs",
+        )
+    )
+
+    def add_tool_call(name, tool_input):
+        args_text = opencode_text(tool_input)
+        key = hashlib.sha1((name + args_text).encode()).hexdigest()
+        seen_calls[key] = seen_calls.get(key, 0) + 1
+        stats["tool_calls"] += 1
+        if seen_calls[key] > 1:
+            stats["repeated_tool_calls"] += 1
+        tool_evidence.append(args_text)
+        entries.append((f"tool:{name}", truncate(args_text, MAX_TOOL_CHARS)))
+
+    known_message_types = {
+        "agent-switched",
+        "assistant",
+        "compaction",
+        "model-switched",
+        "shell",
+        "synthetic",
+        "system",
+        "user",
+    }
+    for row in rows:
+        times.extend(
+            parsed
+            for value in (row["time_created"], row["time_updated"])
+            if (parsed := opencode_ms(value))
+        )
+        try:
+            data = json.loads(row["data"])
+        except (json.JSONDecodeError, TypeError):
+            warn(f"session {session['id']} has malformed JSON at seq {row['seq']}")
+            continue
+        if not isinstance(data, dict):
+            warn(f"session {session['id']} has non-object data at seq {row['seq']}")
+            continue
+        message_type = row["type"]
+        if message_type not in known_message_types:
+            warn(f"session {session['id']} has unknown message type {message_type!r}")
+            continue
+        times.extend(opencode_payload_times(data))
+        if message_type == "user":
+            text = data.get("text")
+            if isinstance(text, str) and text.strip() and not looks_injected(text):
+                stats["user_turns"] += 1
+                entries.append(("user", truncate(text, MAX_MSG_CHARS)))
+        elif message_type == "assistant":
+            stats["assistant_turns"] += 1
+            snapshot = data.get("snapshot")
+            has_code_edits = has_code_edits or bool(
+                isinstance(snapshot, dict) and snapshot.get("files")
+            )
+            content = data.get("content")
+            if not isinstance(content, list):
+                warn(
+                    f"session {session['id']} has malformed assistant content "
+                    f"at seq {row['seq']}"
+                )
+                continue
+            for item in content:
+                if not isinstance(item, dict):
+                    warn(
+                        f"session {session['id']} has malformed content "
+                        f"at seq {row['seq']}"
+                    )
+                    continue
+                content_type = item.get("type")
+                if content_type == "text":
+                    text = item.get("text")
+                    if isinstance(text, str) and text.strip():
+                        entries.append(("assistant", truncate(text, MAX_MSG_CHARS)))
+                elif content_type == "tool":
+                    state = item.get("state")
+                    if not isinstance(state, dict):
+                        warn(
+                            f"session {session['id']} has malformed tool state "
+                            f"at seq {row['seq']}"
+                        )
+                        continue
+                    status = state.get("status")
+                    if status == "pending":
+                        continue
+                    if status not in {
+                        "running",
+                        "completed",
+                        "error",
+                    } or not isinstance(state.get("input"), dict):
+                        warn(
+                            f"session {session['id']} has unknown or malformed tool state "
+                            f"at seq {row['seq']}"
+                        )
+                        continue
+                    name = str(item.get("tool") or item.get("name") or "unknown")
+                    add_tool_call(name, state["input"])
+                    skill_name = opencode_skill_from_tool(item, state)
+                    if skill_name:
+                        skills_used.add(skill_name)
+                    output_parts = []
+                    if status in {"completed", "error"}:
+                        output_parts = opencode_tool_content_text(state.get("content"))
+                        for key in ("output", "result", "structured"):
+                            if state.get(key) not in (None, {}, []):
+                                output_parts.append(opencode_text(state[key]))
+                    if status == "error":
+                        stats["error_outputs"] += 1
+                        error = state.get("error")
+                        if error:
+                            output_parts.append(opencode_text(error))
+                    if output_parts:
+                        output = "\n".join(output_parts)
+                        tool_evidence.append(output)
+                        entries.append(("output", truncate(output, MAX_TOOL_CHARS)))
+                    if status == "completed" and state.get("outputPaths"):
+                        has_code_edits = True
+                    if (
+                        status == "completed"
+                        and name.lower() in OPENCODE_CODE_EDIT_TOOLS
+                    ):
+                        has_code_edits = True
+                elif content_type != "reasoning":
+                    warn(
+                        f"session {session['id']} has unknown content type "
+                        f"{content_type!r} at seq {row['seq']}"
+                    )
+        elif message_type == "shell":
+            command = data.get("command")
+            if not isinstance(command, str):
+                warn(
+                    f"session {session['id']} has malformed shell command "
+                    f"at seq {row['seq']}"
+                )
+                continue
+            add_tool_call("shell", command)
+            output = data.get("output")
+            if isinstance(output, str) and output:
+                tool_evidence.append(output)
+                entries.append(("output", truncate(output, MAX_TOOL_CHARS)))
+                low = output[:2000].lower()
+                if "error" in low or "failed" in low or "traceback" in low:
+                    stats["error_outputs"] += 1
+    evidence = "\n".join(tool_evidence).replace("\\", "/")
+    first_ts = min(times) if times else None
+    last_ts = max(times) if times else None
+    database_id = opencode_database_identity(database)
+    meta = {
+        "id": f"{database_id}-{session['id']}",
+        "source_id": session["id"],
+        "cwd": session["directory"],
+        "started_at": first_ts.isoformat() if first_ts else None,
+        "originator": "opencode",
+        "thread_source": "subagent" if is_child else None,
+        "database_id": database_id,
+    }
+    stats["first_ts"] = first_ts.isoformat() if first_ts else None
+    stats["last_ts"] = last_ts.isoformat() if last_ts else None
+    stats["has_code_edits"] = has_code_edits
+    return meta, stats, entries, sorted(skills_used), last_ts, evidence
+
+
+def find_opencode_sessions(databases, cutoff, include_subagents):
+    records = []
+    scanned = 0
+    usable = []
+    warning_count = 0
+
+    def warn(message):
+        nonlocal warning_count
+        if warning_count < MAX_OPENCODE_WARNINGS:
+            print(f"warning: OpenCode {message}", file=sys.stderr)
+        elif warning_count == MAX_OPENCODE_WARNINGS:
+            print("warning: additional OpenCode warnings suppressed", file=sys.stderr)
+        warning_count += 1
+
+    for database in databases:
+        connection = None
+        try:
+            connection = open_opencode_database(database)
+            if not opencode_database_has_current_schema(connection):
+                warn(f"database {database} does not have the current session schema")
+                continue
+            usable.append(database)
+            columns = sqlite_table_columns(connection, "session")
+            optional = (
+                "parent_id",
+                "directory",
+                "time_created",
+                "time_updated",
+                "summary_additions",
+                "summary_deletions",
+                "summary_files",
+                "summary_diffs",
+            )
+            selections = ["id"] + [
+                name if name in columns else f"NULL AS {name}" for name in optional
+            ]
+            sessions = connection.execute(
+                f"SELECT {', '.join(selections)} FROM session"
+            ).fetchall()
+            scanned += len(sessions)
+            for session in sessions:
+                parsed = parse_opencode_session(
+                    connection,
+                    database,
+                    session,
+                    include_subagents,
+                    warn,
+                )
+                if parsed is None:
+                    continue
+                meta, stats, entries, skills_used, activity, skill_evidence = parsed
+                if activity is None or activity < cutoff:
+                    continue
+                records.append(
+                    {
+                        "meta": meta,
+                        "stats": stats,
+                        "entries": entries,
+                        "skills_used": skills_used,
+                        "skill_evidence": skill_evidence,
+                        "database": database,
+                        "modified_at": activity,
+                    }
+                )
+        except (OSError, sqlite3.Error) as exc:
+            warn(f"could not read database {database}: {exc}")
+        finally:
+            if connection is not None:
+                connection.close()
+    records.sort(key=lambda record: record["modified_at"], reverse=True)
+    return records, scanned, usable
+
+
 def discover_warp_databases(explicit_paths=(), data_dir=None):
     """Find Warp channel databases, preferring explicit paths when provided."""
     candidates = []
@@ -878,16 +1471,19 @@ def detect_skills_from_entries(entries, skill_names):
         for role, text in entries
         if role == "skill" or role.startswith("tool:")
     ).replace("\\", "/")
+    skill_tool_text = "\n".join(
+        text for role, text in entries
+        if role == "skill" or role.lower() == "tool:skill"
+    )
     detected = set()
     for name in skill_names:
         markers = (
             f"skills/{name}/",
             f"{name}/SKILL.md",
             f'"skill": "{name}"',
-            f'"name": "{name}"',
             f'"bundled_skill_id": "{name}"',
         )
-        if any(marker in tool_text for marker in markers):
+        if any(marker in tool_text for marker in markers) or f'"name": "{name}"' in skill_tool_text:
             detected.add(name)
     return detected
 
@@ -902,6 +1498,7 @@ def main():
         sys.exit(2)
     claude_home = Path(args.claude_home).expanduser()
     codex_home = Path(args.codex_home).expanduser()
+    opencode_root = opencode_data_root(args.opencode_data_dir)
     out_dir = Path(args.out).expanduser()
     transcripts_dir = out_dir / "transcripts"
     transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -992,6 +1589,65 @@ def main():
         print(f"error: Codex home not found at {codex_home}", file=sys.stderr)
         sys.exit(1)
 
+    requested_opencode = args.harness in ("auto", "all", "opencode")
+    opencode_databases = []
+    if requested_opencode:
+        rejected_opencode_paths = []
+        opencode_databases = discover_opencode_databases(
+            args.opencode_db, opencode_root, rejected_opencode_paths
+        )
+        for index, (path, reason) in enumerate(rejected_opencode_paths):
+            if index < MAX_OPENCODE_WARNINGS:
+                print(f"warning: OpenCode database {path}: {reason}", file=sys.stderr)
+            elif index == MAX_OPENCODE_WARNINGS:
+                print(
+                    "warning: additional OpenCode path warnings suppressed",
+                    file=sys.stderr,
+                )
+        if opencode_databases:
+            opencode_records, opencode_scanned, usable_databases = (
+                find_opencode_sessions(
+                    opencode_databases,
+                    cutoff,
+                    args.include_subagents,
+                )
+            )
+            if usable_databases:
+                sources["opencode"] = {
+                    "data_root": str(opencode_root),
+                    "databases": [str(path) for path in usable_databases],
+                    "records_scanned": opencode_scanned,
+                    "records_in_window": len(opencode_records),
+                }
+                scanned_count += len(opencode_records)
+                for record in opencode_records:
+                    meta = record["meta"]
+                    if not args.all_conversations and not session_matches_repos(
+                        meta.get("cwd"), repos
+                    ):
+                        continue
+                    in_scope_count += 1
+                    stats = record["stats"]
+                    if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
+                        continue
+                    sessions.append(
+                        {
+                            "harness": "opencode",
+                            "meta": meta,
+                            "stats": stats,
+                            "skills_used": record["skills_used"],
+                            "_skill_evidence": record["skill_evidence"],
+                            "file": f"{record['database']}#session/{meta['source_id']}",
+                            "modified_at": record["modified_at"].isoformat(),
+                            "_entries": record["entries"],
+                        }
+                    )
+        if args.harness == "opencode" and "opencode" not in sources:
+            rejected = ", ".join(path for path, _ in rejected_opencode_paths)
+            suffix = f"; rejected explicit paths: {rejected}" if rejected else ""
+            print(f"error: no usable OpenCode databases found{suffix}", file=sys.stderr)
+            sys.exit(1)
+
     requested_warp = args.harness in ("auto", "all", "warp")
     warp_databases = []
     if requested_warp:
@@ -1037,7 +1693,7 @@ def main():
 
     if not sources:
         print(
-            "error: no Claude Code or Codex session home, or Warp conversation database found",
+            "error: no Claude Code, Codex, OpenCode, or Warp conversation source found",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1054,8 +1710,13 @@ def main():
             session["_entries"],
             skills.keys(),
         )
+        evidence = session.pop("_skill_evidence", "").replace("\\", "/")
+        detected.update(
+            name for name in skills
+            if f"skills/{name}/" in evidence or f"{name}/SKILL.md" in evidence
+        )
         session["skills_used"] = sorted(
-            set(session["skills_used"]) | detected
+            (set(session["skills_used"]) | detected) & set(skills)
         )
 
     sessions.sort(key=lambda session: session["modified_at"], reverse=True)
@@ -1112,6 +1773,8 @@ def main():
         "sources": sources,
         "claude_home": str(claude_home) if "claude" in sources else None,
         "codex_home": str(codex_home) if "codex" in sources else None,
+        "opencode_data_dir": str(opencode_root) if "opencode" in sources else None,
+        "opencode_databases": [str(path) for path in sources.get("opencode", {}).get("databases", [])],
         "warp_databases": [str(path) for path in warp_databases],
         "conversation_scope": conversation_scope,
         "repo": str(repos[0]) if len(repos) == 1 else None,
