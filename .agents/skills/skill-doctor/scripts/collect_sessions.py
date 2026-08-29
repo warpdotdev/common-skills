@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Collect local Claude Code, Codex, and Warp sessions and skills for scoring.
+"""Collect Warp, Claude Code, Codex, and Amp sessions and skills for scoring.
 
-Scans Claude Code project history, Codex rollout files, and/or Warp's local
-conversation databases, discovers installed skills, detects which sessions
-used which skills, and emits:
+Scans Warp's local conversation databases, Claude Code project history, Codex
+rollout files, and/or Amp threads. It discovers installed skills, detects which
+sessions used which skills, and emits:
 
   <out>/inventory.json        - skills, per-session stats, sampling decisions
   <out>/transcripts/<id>.md   - condensed transcripts for sampled sessions
@@ -21,6 +21,7 @@ import subprocess
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 from warp_decoder import ProtobufDecodeError, decode_task
 
 MAX_FILE_BYTES = 8 * 1024 * 1024
@@ -33,13 +34,14 @@ TRANSCRIPT_TAIL = 40
 
 CODE_EDIT_HINTS = ("apply_patch", "*** Begin Patch", "edit_file", "create_file", "str_replace", "write_file")
 CLAUDE_CODE_EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
+AMP_CODE_EDIT_TOOLS = {"apply_patch", "edit_file", "create_file", "write_file"}
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--harness",
-        choices=("auto", "all", "claude", "codex", "warp"),
+        choices=("auto", "all", "claude", "codex", "warp", "amp"),
         default="auto",
         help="session source (default: auto; scans every locally available source)",
     )
@@ -49,6 +51,7 @@ def parse_args():
         help="Claude Code config directory (default: CLAUDE_CONFIG_DIR or ~/.claude)",
     )
     p.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", "~/.codex"))
+    p.add_argument("--amp-cli", default="amp", help="Amp CLI executable (default: amp)")
     p.add_argument(
         "--warp-db",
         action="append",
@@ -111,7 +114,7 @@ def resolve_repos(repo_args):
     return repos
 
 
-def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool):
+def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool, amp_cli=None):
     if isinstance(repos, Path):
         repos = [repos]
     roots = []
@@ -127,6 +130,11 @@ def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool):
             Path.home() / ".agents" / "skills",
             Path.home() / ".claude" / "skills",
         ]
+        if amp_cli:
+            roots += [
+                Path.home() / ".config" / "agents" / "skills",
+                Path.home() / ".config" / "amp" / "skills",
+            ]
     roots += [Path(d).expanduser() for d in extra_dirs]
 
     skills = {}
@@ -152,7 +160,66 @@ def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool):
                 "bytes": skill_md.stat().st_size,
                 "modified_at": datetime.fromtimestamp(skill_md.stat().st_mtime, tz=timezone.utc).isoformat(),
             }
+    if include_global and amp_cli:
+        for skill in discover_amp_managed_skills(amp_cli):
+            skills.setdefault(skill["name"], skill)
     return skills
+
+
+def run_json_command(command, timeout=60):
+    result = subprocess.run(command, capture_output=True, text=True, timeout=timeout)
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or result.stdout.strip() or "command failed")
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"command returned invalid JSON: {exc}") from exc
+
+
+def file_uri_path(value):
+    parsed = urlparse(value or "")
+    if parsed.scheme != "file":
+        return value
+    path = unquote(parsed.path)
+    if re.match(r"^/[A-Za-z]:/", path):
+        path = path[1:]
+    if parsed.netloc:
+        path = f"//{parsed.netloc}{path}"
+    return path
+
+
+def discover_amp_managed_skills(amp_cli="amp"):
+    """Read Amp's personal and workspace skill registry."""
+    try:
+        payload = run_json_command([amp_cli, "skill", "list", "--json"])
+    except (OSError, RuntimeError, subprocess.TimeoutExpired):
+        return []
+    if not isinstance(payload, dict):
+        return []
+    found = []
+    for item in payload.get("skills", []):
+        if not isinstance(item, dict):
+            continue
+        if item.get("source") not in ("global-user", "global-workspace"):
+            continue
+        base_dir = item.get("baseDir", "")
+        name = item.get("name")
+        if not name or not isinstance(base_dir, str) or urlparse(base_dir).scheme != "file":
+            continue
+        skill_md = Path(file_uri_path(base_dir)) / "SKILL.md"
+        try:
+            stat = skill_md.stat()
+        except OSError:
+            continue
+        found.append({
+            "name": name,
+            "path": str(skill_md),
+            "description": str(item.get("description") or "")[:300],
+            "bytes": stat.st_size,
+            "modified_at": datetime.fromtimestamp(stat.st_mtime, tz=timezone.utc).isoformat(),
+            "source": item.get("source"),
+        })
+    return found
 
 
 def find_codex_session_files(codex_home: Path, cutoff: datetime):
@@ -793,6 +860,296 @@ def parse_warp_conversation(record, skill_names, include_subagents):
     return meta, stats, entries, sorted(skills_used)
 
 
+def is_amp_runtime(env=None):
+    """Identify Amp from execution context, not from files found on disk."""
+    env = os.environ if env is None else env
+    thread_id = env.get("AMP_THREAD_ID", "")
+    return bool(
+        re.fullmatch(r"T-[0-9a-fA-F-]{16,}", thread_id)
+        and (env.get("AMP_EXECUTOR") or env.get("AMP_ORB"))
+    )
+
+
+def amp_requested(harness, env=None):
+    return harness in ("all", "amp") or (harness == "auto" and is_amp_runtime(env))
+
+
+def amp_initial_context(payload):
+    env = payload.get("env")
+    if not isinstance(env, dict):
+        return {}
+    initial = env.get("initial")
+    return initial if isinstance(initial, dict) else {}
+
+
+def amp_cwd(payload):
+    value = amp_initial_context(payload).get("workingDirectory")
+    return file_uri_path(value) if value else None
+
+
+def amp_repository_urls(payload):
+    trees = amp_initial_context(payload).get("trees") or []
+    urls = set()
+    for tree in trees:
+        repository = tree.get("repository") or {} if isinstance(tree, dict) else {}
+        if isinstance(repository, dict) and repository.get("url"):
+            urls.add(repository["url"])
+    return sorted(urls)
+
+
+def amp_result_text(block):
+    run = block.get("run") or {}
+    if not isinstance(run, dict):
+        run = {}
+    result = run.get("result") or block.get("content") or block.get("output") or ""
+    if isinstance(result, str):
+        return result
+    if isinstance(result, dict):
+        content = result.get("content")
+        if isinstance(content, list):
+            text = extract_text(content)
+            if text:
+                return text
+    return json.dumps(result, ensure_ascii=False)
+
+
+def parse_amp_thread(payload, skill_names, is_subagent=False):
+    """Normalize one `amp threads export` payload to the shared transcript shape."""
+    if not isinstance(payload, dict) or not payload.get("id"):
+        return None
+    meta_block = payload.get("meta") or {}
+    if isinstance(meta_block, dict) and meta_block.get("deleted"):
+        return None
+
+    stats = {
+        "user_turns": 0,
+        "assistant_turns": 0,
+        "tool_calls": 0,
+        "repeated_tool_calls": 0,
+        "error_outputs": 0,
+    }
+    entries = []
+    seen_calls = {}
+    skills_used = set()
+    used_tool_names = set()
+    first_ts = last_ts = None
+
+    activated = payload.get("activatedSkills") or []
+    if isinstance(activated, dict):
+        activated = list(activated)
+    for item in activated:
+        name = item if isinstance(item, str) else item.get("name") if isinstance(item, dict) else None
+        if name in skill_names:
+            skills_used.add(name)
+
+    for message in payload.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        usage = message.get("usage") or {}
+        timestamp = usage.get("timestamp") if isinstance(usage, dict) else None
+        if timestamp:
+            first_ts = first_ts or timestamp
+            last_ts = timestamp
+        if role == "assistant":
+            stats["assistant_turns"] += 1
+
+        has_user_text = False
+        content = message.get("content") or []
+        if not isinstance(content, list):
+            continue
+        for block in content:
+            if not isinstance(block, dict) or block.get("hidden"):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                text = block.get("text", "")
+                if not isinstance(text, str) or not text or looks_injected(text):
+                    continue
+                if role == "user":
+                    has_user_text = True
+                    entries.append(("user", truncate(text, MAX_MSG_CHARS)))
+                elif role == "assistant":
+                    entries.append(("assistant", truncate(text, MAX_MSG_CHARS)))
+            elif block_type == "tool_use":
+                stats["tool_calls"] += 1
+                name = str(block.get("name") or "unknown")
+                used_tool_names.add(name)
+                tool_input = block.get("input") or {}
+                args_text = tool_input if isinstance(tool_input, str) else json.dumps(
+                    tool_input, ensure_ascii=False
+                )
+                key = hashlib.sha1((name + args_text).encode()).hexdigest()
+                seen_calls[key] = seen_calls.get(key, 0) + 1
+                if seen_calls[key] > 1:
+                    stats["repeated_tool_calls"] += 1
+                if name == "skill" and isinstance(tool_input, dict):
+                    skill_name = tool_input.get("name") or tool_input.get("skill")
+                    if skill_name in skill_names:
+                        skills_used.add(skill_name)
+                entries.append((f"tool:{name}", truncate(args_text, MAX_TOOL_CHARS)))
+            elif block_type == "tool_result":
+                result = amp_result_text(block)
+                run = block.get("run") or {}
+                if not isinstance(run, dict):
+                    run = {}
+                run_result = run.get("result") or {}
+                low = result[:2000].lower()
+                if (
+                    run.get("status") in ("error", "failed")
+                    or (isinstance(run_result, dict) and run_result.get("exitCode") not in (None, 0))
+                    or block.get("is_error")
+                    or "error" in low
+                    or "failed" in low
+                    or "traceback" in low
+                ):
+                    stats["error_outputs"] += 1
+                entries.append(("output", truncate(result, MAX_TOOL_CHARS)))
+        if role == "user" and has_user_text:
+            stats["user_turns"] += 1
+
+    created = payload.get("created")
+    if isinstance(created, (int, float)):
+        try:
+            started_at = datetime.fromtimestamp(created / 1000, tz=timezone.utc).isoformat()
+        except (OverflowError, OSError, ValueError):
+            started_at = first_ts
+    else:
+        started_at = created or first_ts
+    meta = {
+        "id": payload["id"],
+        "cwd": amp_cwd(payload),
+        "started_at": started_at,
+        "originator": "amp",
+        "thread_source": "subagent" if is_subagent else None,
+        "repository_urls": amp_repository_urls(payload),
+    }
+    stats["first_ts"] = first_ts
+    stats["last_ts"] = last_ts
+    stats["has_code_edits"] = bool(used_tool_names & AMP_CODE_EDIT_TOOLS)
+    return meta, stats, entries, sorted(skills_used)
+
+
+def paginated_amp_threads(amp_cli, command, page_size):
+    threads = []
+    offset = 0
+    while True:
+        page = run_json_command([
+            amp_cli, "threads", *command, "--json", "--limit", str(page_size),
+            "--offset", str(offset),
+        ])
+        if not isinstance(page, list):
+            raise RuntimeError("Amp thread command returned a non-list response")
+        threads.extend(page)
+        if len(page) < page_size:
+            return threads
+        offset += len(page)
+
+
+def list_amp_threads(amp_cli):
+    return paginated_amp_threads(amp_cli, ["list", "--include-archived"], 500)
+
+
+def search_amp_threads(amp_cli, query):
+    return paginated_amp_threads(amp_cli, ["search", query], 200)
+
+
+def repo_origin(repo):
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(repo), "remote", "get-url", "origin"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def find_amp_candidates(amp_cli, repos, all_conversations):
+    """Discover Amp thread summaries for the selected conversation scope."""
+    summaries = list_amp_threads(amp_cli) if all_conversations else []
+    if not all_conversations:
+        for repo in repos:
+            origin = repo_origin(repo)
+            if origin:
+                summaries.extend(search_amp_threads(amp_cli, f"repo:{origin}"))
+    candidates = {}
+    for summary in summaries:
+        if isinstance(summary, dict) and summary.get("id"):
+            candidates[summary["id"]] = summary
+    return list(candidates.values())
+
+
+def collect_amp_sessions(amp_cli, candidates, skill_names, cutoff, include_subagents):
+    sessions = []
+    children_by_parent = {}
+    child_ids = set()
+    for candidate in candidates:
+        thread_id = candidate.get("id")
+        if not thread_id:
+            continue
+        try:
+            children = search_amp_threads(amp_cli, f"parent:{thread_id}")
+        except (OSError, RuntimeError, subprocess.TimeoutExpired):
+            children = []
+        children = [
+            child for child in children
+            if isinstance(child, dict) and child.get("id")
+        ]
+        children_by_parent[thread_id] = children
+        child_ids.update(child["id"] for child in children)
+    queued = [
+        (candidate, candidate.get("id") in child_ids)
+        for candidate in candidates
+        if include_subagents or candidate.get("id") not in child_ids
+    ]
+    seen = set()
+    while queued:
+        candidate, is_subagent = queued.pop(0)
+        thread_id = candidate.get("id")
+        if not thread_id or thread_id in seen:
+            continue
+        seen.add(thread_id)
+        updated_at = candidate.get("updatedAt") or candidate.get("updated")
+        updated = parse_sqlite_timestamp(updated_at)
+        if updated is not None and updated < cutoff:
+            continue
+        try:
+            payload = run_json_command([amp_cli, "threads", "export", thread_id])
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            print(f"warning: could not read Amp thread {thread_id}: {exc}", file=sys.stderr)
+            continue
+        parsed = parse_amp_thread(payload, skill_names, is_subagent)
+        if parsed is None:
+            continue
+        meta, stats, entries, skills_used = parsed
+        if stats["assistant_turns"] >= 1 and stats["tool_calls"] >= 1:
+            sessions.append({
+                "harness": "amp",
+                "meta": meta,
+                "stats": stats,
+                "skills_used": skills_used,
+                "file": f"https://ampcode.com/threads/{thread_id}",
+                "modified_at": updated_at or meta.get("started_at") or "1970-01-01T00:00:00+00:00",
+                "_entries": entries,
+            })
+        if include_subagents:
+            children = children_by_parent.get(thread_id)
+            if children is None:
+                try:
+                    children = search_amp_threads(amp_cli, f"parent:{thread_id}")
+                except (OSError, RuntimeError, subprocess.TimeoutExpired):
+                    children = []
+                children = [
+                    child for child in children
+                    if isinstance(child, dict) and child.get("id")
+                ]
+            queued.extend((child, True) for child in children)
+    return sessions
+
+
 def render_transcript(meta, stats, skills_used, entries) -> str:
     lines = [
         f"# Session {meta.get('id')}",
@@ -912,6 +1269,7 @@ def main():
         codex_home,
         args.skills_dir,
         args.include_global_skills,
+        args.amp_cli if amp_requested(args.harness) else None,
     )
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.days)
 
@@ -920,6 +1278,7 @@ def main():
     scanned_count = 0
     sources = {}
 
+    requested_amp = amp_requested(args.harness)
     requested_claude = args.harness in ("auto", "all", "claude")
     if requested_claude and (claude_home / "projects").is_dir():
         claude_files = find_claude_session_files(
@@ -1035,9 +1394,43 @@ def main():
             print("error: no Warp conversation databases found", file=sys.stderr)
             sys.exit(1)
 
+    if requested_amp:
+        try:
+            amp_candidates = find_amp_candidates(
+                args.amp_cli,
+                repos,
+                args.all_conversations,
+            )
+            amp_candidates = [
+                candidate for candidate in amp_candidates
+                if (
+                    parse_sqlite_timestamp(candidate.get("updatedAt") or candidate.get("updated"))
+                    or cutoff
+                ) >= cutoff
+            ]
+            amp_sessions = collect_amp_sessions(
+                args.amp_cli,
+                amp_candidates,
+                skills.keys(),
+                cutoff,
+                args.include_subagents,
+            )
+        except (OSError, RuntimeError, subprocess.TimeoutExpired) as exc:
+            if args.harness == "amp":
+                print(f"error: could not query Amp threads: {exc}", file=sys.stderr)
+                sys.exit(1)
+        else:
+            sources["amp"] = {
+                "api": "Amp CLI thread JSON",
+                "records_in_window": len(amp_candidates),
+            }
+            scanned_count += len(amp_candidates)
+            in_scope_count += len(amp_sessions)
+            sessions.extend(amp_sessions)
+
     if not sources:
         print(
-            "error: no Claude Code or Codex session home, or Warp conversation database found",
+            "error: no Warp, Claude Code, Codex, or Amp conversation source found",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1048,6 +1441,7 @@ def main():
             codex_home,
             args.skills_dir,
             args.include_global_skills,
+            args.amp_cli if requested_amp else None,
         )
     for session in sessions:
         detected = detect_skills_from_entries(

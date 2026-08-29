@@ -4,9 +4,10 @@ This file is the single source of truth for harness support in `skill-doctor`. R
 
 ## Startup gate
 
-| Harness | Collector ID | Local conversation source |
+| Harness | Collector ID | Conversation source |
 | --- | --- | --- |
 | Warp | `warp` | Read-only Warp conversation databases |
+| Amp | `amp` | Authenticated thread JSON through `amp threads` |
 | Claude Code | `claude` | Project-history JSONL |
 | Codex | `codex` | Rollout JSONL |
 
@@ -14,7 +15,7 @@ At startup, identify the harness executing the skill from the runtime context. D
 
 If the executing harness is not listed above, or cannot be identified confidently, stop before creating a report directory or reading conversation history. Tell the user:
 
-> skill-doctor currently supports Warp, Claude Code, and Codex. This run appears to be using an unsupported harness, so no conversations were read.
+> skill-doctor currently supports Warp, Amp, Claude Code, and Codex. This run appears to be using an unsupported harness, so no conversations were read.
 
 ## Collector source selection
 
@@ -25,6 +26,7 @@ If the executing harness is not listed above, or cannot be identified confidentl
 
 Harness-specific source overrides:
 
+- `--amp-cli PATH` — nonstandard Amp CLI executable.
 - `--claude-home PATH` — nonstandard Claude Code configuration directory.
 - `--codex-home PATH` — nonstandard Codex home.
 - `--warp-db PATH` — explicit Warp database; repeatable.
@@ -37,5 +39,6 @@ Project skills are discovered from:
 - `.agents/skills`
 - `.claude/skills`
 - `.codex/skills`
+- `.config/amp/skills` + `amp skill list --json`
 
 Global skills are discovered from the corresponding directories under the user's home and configured harness homes when `--include-global-skills` is set.
