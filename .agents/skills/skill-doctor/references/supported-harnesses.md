@@ -9,12 +9,13 @@ This file is the single source of truth for harness support in `skill-doctor`. R
 | Warp | `warp` | Read-only Warp conversation databases |
 | Claude Code | `claude` | Project-history JSONL |
 | Codex | `codex` | Rollout JSONL |
+| Pi | `pi` | Session JSONL |
 
 At startup, identify the harness executing the skill from the runtime context. Do not infer it from conversation files found on disk.
 
 If the executing harness is not listed above, or cannot be identified confidently, stop before creating a report directory or reading conversation history. Tell the user:
 
-> skill-doctor currently supports Warp, Claude Code, and Codex. This run appears to be using an unsupported harness, so no conversations were read.
+> skill-doctor currently supports Warp, Claude Code, Codex, and Pi. This run appears to be using an unsupported harness, so no conversations were read.
 
 ## Collector source selection
 
@@ -27,6 +28,7 @@ Harness-specific source overrides:
 
 - `--claude-home PATH` — nonstandard Claude Code configuration directory.
 - `--codex-home PATH` — nonstandard Codex home.
+- `--pi-home PATH` — nonstandard Pi home (default: `~/.pi`); sessions are read from `<PATH>/agent/sessions/`.
 - `--warp-db PATH` — explicit Warp database; repeatable.
 - `--warp-data-dir PATH` — nonstandard Warp channel-data directory.
 

@@ -12,7 +12,9 @@ from collect_sessions import (
     detect_skills_from_entries,
     discover_skills,
     find_claude_session_files,
+    find_pi_session_files,
     parse_claude_session,
+    parse_pi_session,
     session_matches_repos,
 )
 
@@ -190,6 +192,150 @@ class ClaudeSessionTests(unittest.TestCase):
             parsed = parse_claude_session(path, set(), True)
             self.assertEqual(parsed[0]["id"], "session-1-child-1")
             self.assertEqual(parsed[0]["thread_source"], "subagent")
+
+
+class PiSessionTests(unittest.TestCase):
+    def test_finds_session_files_within_window(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            pi_home = Path(tmp)
+            recent = pi_home / "agent" / "sessions" / "--repo--" / "20260820_new.jsonl"
+            old = pi_home / "agent" / "sessions" / "--repo--" / "20260101_old.jsonl"
+            for path in (recent, old):
+                write_jsonl(path, [{"type": "session", "id": "s", "cwd": "/tmp/repo"}])
+            old_time = (datetime.now(timezone.utc) - timedelta(days=10)).timestamp()
+            os.utime(old, (old_time, old_time))
+            cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+            found = find_pi_session_files(pi_home, cutoff)
+
+            self.assertEqual([path for _, path in found], [recent])
+
+    def test_missing_sessions_directory_returns_empty(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            found = find_pi_session_files(Path(tmp), datetime.now(timezone.utc))
+            self.assertEqual(found, [])
+
+    def test_parses_messages_tool_calls_skills_and_stats(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            write_jsonl(path, [
+                {
+                    "type": "session",
+                    "version": 3,
+                    "id": "session-1",
+                    "timestamp": "2026-08-20T10:00:00.000Z",
+                    "cwd": "/tmp/repo",
+                },
+                {
+                    "type": "message",
+                    "id": "a1",
+                    "parentId": None,
+                    "timestamp": "2026-08-20T10:00:01.000Z",
+                    "message": {"role": "user", "content": "Improve my skill"},
+                },
+                {
+                    "type": "message",
+                    "id": "a2",
+                    "parentId": "a1",
+                    "timestamp": "2026-08-20T10:00:02.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [
+                            {"type": "text", "text": "I will inspect it."},
+                            {
+                                "type": "toolCall",
+                                "id": "call_1",
+                                "name": "edit",
+                                "arguments": {"path": "/tmp/repo/.agents/skills/update-skill/SKILL.md"},
+                            },
+                        ],
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-5",
+                        "usage": {},
+                        "stopReason": "toolUse",
+                    },
+                },
+                {
+                    "type": "message",
+                    "id": "a3",
+                    "parentId": "a2",
+                    "timestamp": "2026-08-20T10:00:03.000Z",
+                    "message": {
+                        "role": "toolResult",
+                        "toolCallId": "call_1",
+                        "toolName": "edit",
+                        "content": [{"type": "text", "text": "permission denied"}],
+                        "isError": True,
+                    },
+                },
+            ])
+
+            meta, stats, entries, skills = parse_pi_session(path, {"update-skill"}, False)
+
+            self.assertEqual(meta["id"], "session-1")
+            self.assertEqual(meta["cwd"], "/tmp/repo")
+            self.assertEqual(stats["user_turns"], 1)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(stats["tool_calls"], 1)
+            self.assertEqual(stats["error_outputs"], 1)
+            self.assertTrue(stats["has_code_edits"])
+            self.assertEqual(skills, ["update-skill"])
+            self.assertIn(("user", "Improve my skill"), entries)
+            self.assertIn(("assistant", "I will inspect it."), entries)
+
+    def test_bash_execution_counts_as_tool_call_and_detects_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            write_jsonl(path, [
+                {
+                    "type": "session",
+                    "id": "session-2",
+                    "timestamp": "2026-08-20T10:00:00.000Z",
+                    "cwd": "/tmp/repo",
+                },
+                {
+                    "type": "message",
+                    "id": "b1",
+                    "parentId": None,
+                    "timestamp": "2026-08-20T10:00:01.000Z",
+                    "message": {"role": "user", "content": "Run the tests"},
+                },
+                {
+                    "type": "message",
+                    "id": "b2",
+                    "parentId": "b1",
+                    "timestamp": "2026-08-20T10:00:02.000Z",
+                    "message": {
+                        "role": "bashExecution",
+                        "command": "pytest",
+                        "output": "FAILED test_x",
+                        "exitCode": 1,
+                        "cancelled": False,
+                        "truncated": False,
+                    },
+                },
+                {
+                    "type": "message",
+                    "id": "b3",
+                    "parentId": "b2",
+                    "timestamp": "2026-08-20T10:00:03.000Z",
+                    "message": {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Let me fix that."}],
+                        "provider": "anthropic",
+                        "model": "claude-sonnet-4-5",
+                        "usage": {},
+                        "stopReason": "stop",
+                    },
+                },
+            ])
+
+            meta, stats, entries, skills = parse_pi_session(path, set(), False)
+
+            self.assertEqual(stats["tool_calls"], 1)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(stats["error_outputs"], 1)
+            self.assertIn(("tool:bash", "pytest"), entries)
 
 
 if __name__ == "__main__":

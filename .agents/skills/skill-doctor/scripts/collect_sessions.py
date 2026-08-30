@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Collect local Claude Code, Codex, and Warp sessions and skills for scoring.
+"""Collect local Claude Code, Codex, Warp, and Pi sessions and skills for scoring.
 
-Scans Claude Code project history, Codex rollout files, and/or Warp's local
-conversation databases, discovers installed skills, detects which sessions
-used which skills, and emits:
+Scans Claude Code project history, Codex rollout files, Warp's local
+conversation databases, and/or Pi session files, discovers installed skills,
+detects which sessions used which skills, and emits:
 
   <out>/inventory.json        - skills, per-session stats, sampling decisions
   <out>/transcripts/<id>.md   - condensed transcripts for sampled sessions
@@ -33,13 +33,14 @@ TRANSCRIPT_TAIL = 40
 
 CODE_EDIT_HINTS = ("apply_patch", "*** Begin Patch", "edit_file", "create_file", "str_replace", "write_file")
 CLAUDE_CODE_EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
+PI_EDIT_TOOL_NAMES = {"write", "edit"}
 
 
 def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--harness",
-        choices=("auto", "all", "claude", "codex", "warp"),
+        choices=("auto", "all", "claude", "codex", "warp", "pi"),
         default="auto",
         help="session source (default: auto; scans every locally available source)",
     )
@@ -49,6 +50,11 @@ def parse_args():
         help="Claude Code config directory (default: CLAUDE_CONFIG_DIR or ~/.claude)",
     )
     p.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", "~/.codex"))
+    p.add_argument(
+        "--pi-home",
+        default=os.environ.get("PI_HOME", "~/.pi"),
+        help="Pi config directory (default: PI_HOME or ~/.pi)",
+    )
     p.add_argument(
         "--warp-db",
         action="append",
@@ -472,6 +478,146 @@ def parse_codex_session(path: Path, skill_names, include_subagents: bool):
     stats["first_ts"] = first_ts
     stats["last_ts"] = last_ts
     stats["has_code_edits"] = any(h in args_blob for h in CODE_EDIT_HINTS)
+    return meta, stats, entries, skills_used
+
+
+def find_pi_session_files(pi_home: Path, cutoff: datetime):
+    """Find recent Pi session JSONL files under <pi_home>/agent/sessions/."""
+    root = pi_home / "agent" / "sessions"
+    if not root.is_dir():
+        return []
+    files = []
+    for f in root.rglob("*.jsonl"):
+        try:
+            mtime = datetime.fromtimestamp(f.stat().st_mtime, tz=timezone.utc)
+        except OSError:
+            continue
+        if mtime >= cutoff:
+            files.append((mtime, f))
+    files.sort(key=lambda t: t[0], reverse=True)
+    return files
+
+
+def parse_pi_session(path: Path, skill_names, include_subagents: bool):
+    """Normalize one Pi session JSONL file to the shared transcript shape.
+
+    Pi has no sub-agent/sidechain concept, so include_subagents is accepted
+    only for interface parity with the other harness parsers.
+    """
+    try:
+        raw = path.read_text(errors="replace")
+    except OSError:
+        return None
+    if len(raw) > MAX_FILE_BYTES:
+        raw = raw[:MAX_FILE_BYTES]
+
+    meta = {}
+    stats = {"user_turns": 0, "assistant_turns": 0, "tool_calls": 0, "repeated_tool_calls": 0, "error_outputs": 0}
+    entries = []
+    seen_calls = {}
+    call_args_text = []
+    used_tool_names = set()
+    first_ts = last_ts = None
+
+    for line in raw.splitlines():
+        try:
+            obj = json.loads(line)
+        except (json.JSONDecodeError, ValueError):
+            continue
+
+        entry_type = obj.get("type")
+        ts = obj.get("timestamp")
+        if isinstance(ts, str):
+            first_ts = first_ts or ts
+            last_ts = ts
+
+        if entry_type == "session":
+            meta = {
+                "id": obj.get("id") or path.stem,
+                "cwd": obj.get("cwd"),
+                "started_at": obj.get("timestamp"),
+                "originator": "pi",
+                "thread_source": None,
+            }
+            continue
+
+        if entry_type != "message":
+            continue
+        message = obj.get("message")
+        if not isinstance(message, dict):
+            continue
+        role = message.get("role")
+        content = message.get("content")
+
+        if role == "user":
+            text = extract_text(content)
+            if text and not looks_injected(text):
+                stats["user_turns"] += 1
+                entries.append(("user", truncate(text, MAX_MSG_CHARS)))
+        elif role == "assistant":
+            stats["assistant_turns"] += 1
+            blocks = content if isinstance(content, list) else [{"type": "text", "text": content}]
+            for block in blocks:
+                if not isinstance(block, dict):
+                    continue
+                block_type = block.get("type")
+                if block_type == "text":
+                    text = block.get("text")
+                    if isinstance(text, str) and text:
+                        entries.append(("assistant", truncate(text, MAX_MSG_CHARS)))
+                elif block_type == "toolCall":
+                    stats["tool_calls"] += 1
+                    name = str(block.get("name") or "unknown")
+                    args = block.get("arguments") or {}
+                    args_text = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False)
+                    key = hashlib.sha1((name + args_text).encode()).hexdigest()
+                    seen_calls[key] = seen_calls.get(key, 0) + 1
+                    if seen_calls[key] > 1:
+                        stats["repeated_tool_calls"] += 1
+                    call_args_text.append(args_text)
+                    used_tool_names.add(name)
+                    entries.append((f"tool:{name}", truncate(args_text, MAX_TOOL_CHARS)))
+        elif role == "toolResult":
+            result = extract_text(content)
+            low = result[:2000].lower()
+            if message.get("isError") or "error" in low or "failed" in low or "traceback" in low:
+                stats["error_outputs"] += 1
+            entries.append(("output", truncate(result, MAX_TOOL_CHARS)))
+        elif role == "bashExecution":
+            stats["tool_calls"] += 1
+            command = message.get("command") or ""
+            key = hashlib.sha1(("bash" + command).encode()).hexdigest()
+            seen_calls[key] = seen_calls.get(key, 0) + 1
+            if seen_calls[key] > 1:
+                stats["repeated_tool_calls"] += 1
+            call_args_text.append(command)
+            used_tool_names.add("bash")
+            entries.append(("tool:bash", truncate(command, MAX_TOOL_CHARS)))
+            output = message.get("output") or ""
+            low = output[:2000].lower()
+            exit_code = message.get("exitCode")
+            if message.get("cancelled") or (exit_code is not None and exit_code != 0) or (
+                "error" in low or "failed" in low or "traceback" in low
+            ):
+                stats["error_outputs"] += 1
+            entries.append(("output", truncate(output, MAX_TOOL_CHARS)))
+        # Other roles (custom, branchSummary, compactionSummary) are metadata or
+        # summary records rather than conversational turns; skip them.
+
+    if not meta:
+        meta = {"id": path.stem, "cwd": None, "started_at": first_ts, "originator": "pi", "thread_source": None}
+
+    args_blob = "\n".join(call_args_text)
+    skills_used = sorted(
+        name for name in skill_names
+        if f"skills/{name}/" in args_blob or f"{name}/SKILL.md" in args_blob
+    )
+    stats["first_ts"] = first_ts
+    stats["last_ts"] = last_ts
+    stats["has_code_edits"] = (
+        bool(used_tool_names & PI_EDIT_TOOL_NAMES)
+        or any(hint in args_blob for hint in CODE_EDIT_HINTS)
+    )
     return meta, stats, entries, skills_used
 
 
@@ -902,6 +1048,7 @@ def main():
         sys.exit(2)
     claude_home = Path(args.claude_home).expanduser()
     codex_home = Path(args.codex_home).expanduser()
+    pi_home = Path(args.pi_home).expanduser()
     out_dir = Path(args.out).expanduser()
     transcripts_dir = out_dir / "transcripts"
     transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -1035,9 +1182,44 @@ def main():
             print("error: no Warp conversation databases found", file=sys.stderr)
             sys.exit(1)
 
+    requested_pi = args.harness in ("auto", "all", "pi")
+    if requested_pi and (pi_home / "agent" / "sessions").is_dir():
+        pi_files = find_pi_session_files(pi_home, cutoff)
+        sources["pi"] = {"home": str(pi_home), "records_in_window": len(pi_files)}
+        scanned_count += len(pi_files)
+        for mtime, path in pi_files:
+            parsed = parse_pi_session(path, skills.keys(), args.include_subagents)
+            if parsed is None:
+                continue
+            meta, stats, entries, skills_used = parsed
+            if not args.all_conversations and not session_matches_repos(
+                meta.get("cwd"),
+                repos,
+            ):
+                continue
+            in_scope_count += 1
+            if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
+                continue
+            sessions.append({
+                "harness": "pi",
+                "meta": meta,
+                "stats": stats,
+                "skills_used": skills_used,
+                "file": str(path),
+                "modified_at": mtime.isoformat(),
+                "_entries": entries,
+            })
+    elif args.harness == "pi":
+        print(
+            f"error: Pi session directory not found at {pi_home / 'agent' / 'sessions'}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if not sources:
         print(
-            "error: no Claude Code or Codex session home, or Warp conversation database found",
+            "error: no Claude Code or Codex session home, Warp conversation database, "
+            "or Pi session directory found",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1112,6 +1294,7 @@ def main():
         "sources": sources,
         "claude_home": str(claude_home) if "claude" in sources else None,
         "codex_home": str(codex_home) if "codex" in sources else None,
+        "pi_home": str(pi_home) if "pi" in sources else None,
         "warp_databases": [str(path) for path in warp_databases],
         "conversation_scope": conversation_scope,
         "repo": str(repos[0]) if len(repos) == 1 else None,
