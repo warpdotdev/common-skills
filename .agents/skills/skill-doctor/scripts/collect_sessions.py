@@ -23,7 +23,6 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from warp_decoder import ProtobufDecodeError, decode_task
 
-MAX_FILE_BYTES = 8 * 1024 * 1024
 MAX_WARP_CONVERSATION_BYTES = 32 * 1024 * 1024
 MAX_MSG_CHARS = 1500
 MAX_TOOL_CHARS = 500
@@ -222,8 +221,6 @@ def parse_claude_session(path: Path, skill_names, include_subagents: bool):
         raw = path.read_text(errors="replace")
     except OSError:
         return None
-    if len(raw) > MAX_FILE_BYTES:
-        raw = raw[:MAX_FILE_BYTES]
 
     meta = {}
     stats = {
@@ -376,8 +373,6 @@ def parse_codex_session(path: Path, skill_names, include_subagents: bool):
         raw = path.read_text(errors="replace")
     except OSError:
         return None
-    if len(raw) > MAX_FILE_BYTES:
-        raw = raw[:MAX_FILE_BYTES]
 
     meta = {}
     stats = {"user_turns": 0, "assistant_turns": 0, "tool_calls": 0, "repeated_tool_calls": 0, "error_outputs": 0}

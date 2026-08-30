@@ -13,6 +13,7 @@ from collect_sessions import (
     discover_skills,
     find_claude_session_files,
     parse_claude_session,
+    parse_codex_session,
     session_matches_repos,
 )
 
@@ -172,6 +173,88 @@ class ClaudeSessionTests(unittest.TestCase):
             self.assertEqual(skills, ["update-skill"])
             self.assertIn(("user", "Improve my skill"), entries)
             self.assertIn(("assistant", "I will inspect it."), entries)
+
+    def test_parses_full_file_past_old_eight_megabyte_cutoff(self):
+        # Regression test: collect_sessions.py used to slice the raw file to
+        # MAX_FILE_BYTES (8MB) before parsing, silently dropping any records
+        # past that offset. Pad the file well past 8MB with filler tool calls
+        # and assert a message placed after the old cutoff still comes through.
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session.jsonl"
+            common = {
+                "sessionId": "session-1",
+                "cwd": "/tmp/repo",
+                "timestamp": "2026-08-20T10:00:00Z",
+            }
+            filler_text = "x" * 10000
+            records = [
+                {
+                    **common,
+                    "type": "assistant",
+                    "uuid": f"assistant-{i}",
+                    "message": {
+                        "id": f"message-{i}",
+                        "role": "assistant",
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "Bash",
+                                "input": {"command": filler_text},
+                            }
+                        ],
+                    },
+                }
+                for i in range(900)
+            ]
+            records.append({
+                **common,
+                "type": "user",
+                "uuid": "user-late",
+                "message": {"role": "user", "content": "Message after old 8MB cutoff"},
+            })
+            write_jsonl(path, records)
+
+            self.assertGreater(path.stat().st_size, 8 * 1024 * 1024)
+
+            meta, stats, entries, skills = parse_claude_session(path, set(), False)
+
+            self.assertIn(("user", "Message after old 8MB cutoff"), entries)
+            self.assertEqual(stats["user_turns"], 1)
+
+    def test_codex_parses_full_file_past_old_eight_megabyte_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "rollout-session.jsonl"
+            filler_text = "x" * 10000
+            records = [{
+                "type": "session_meta",
+                "timestamp": "2026-08-20T10:00:00Z",
+                "payload": {"id": "session-1", "cwd": "/tmp/repo"},
+            }]
+            records.extend({
+                "type": "response_item",
+                "timestamp": "2026-08-20T10:00:00Z",
+                "payload": {
+                    "type": "function_call",
+                    "name": "shell",
+                    "arguments": {"command": filler_text},
+                },
+            } for _ in range(900))
+            records.append({
+                "type": "response_item",
+                "timestamp": "2026-08-20T10:00:01Z",
+                "payload": {
+                    "type": "message",
+                    "role": "user",
+                    "content": "Message after old 8MB cutoff",
+                },
+            })
+            write_jsonl(path, records)
+
+            self.assertGreater(path.stat().st_size, 8 * 1024 * 1024)
+
+            meta, stats, entries, skills = parse_codex_session(path, set(), False)
+
+            self.assertIn(("user", "Message after old 8MB cutoff"), entries)
 
     def test_excludes_sidechains_by_default(self):
         with tempfile.TemporaryDirectory() as tmp:
