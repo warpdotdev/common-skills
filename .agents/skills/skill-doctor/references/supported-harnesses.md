@@ -12,12 +12,13 @@ This file is the single source of truth for harness support in `skill-doctor`. R
 | Pi | `pi` | Pi agent JSONL (`~/.pi/agent/sessions`) |
 | Grok Build | `grok` | Grok Build chat_history JSONL (`~/.grok/sessions`) |
 | ZCode | `zcode` | ZCode model-io rollout (`~/.zcode/cli/rollout`) |
+| Hermes | `hermes` | Hermes Agent state.db (SQLite: `sessions` + `messages`) |
 
 At startup, identify the harness executing the skill from the runtime context. Do not infer it from conversation files found on disk.
 
 If the executing harness is not listed above, or cannot be identified confidently, stop before creating a report directory or reading conversation history. Tell the user:
 
-> skill-doctor currently supports Warp, Claude Code, Codex, Pi, Grok Build, and ZCode. This run appears to be using an unsupported harness, so no conversations were read.
+> skill-doctor currently supports Warp, Claude Code, Codex, Pi, Grok Build, ZCode, and Hermes. This run appears to be using an unsupported harness, so no conversations were read.
 
 ## Collector source selection
 
@@ -35,6 +36,7 @@ Harness-specific source overrides:
 - `--pi-home PATH` — nonstandard Pi agent home (default `~/.pi/agent`).
 - `--grok-home PATH` — nonstandard Grok Build home (default `~/.grok`).
 - `--zcode-home PATH` — nonstandard ZCode home (default `~/.zcode`).
+- `--hermes-home PATH` — Hermes Agent home containing `state.db` (default: `HERMES_HOME` env or `~`).
 
 ## Skill locations
 

@@ -13,10 +13,12 @@ from collect_sessions import (
     discover_skills,
     find_claude_session_files,
     find_grok_session_files,
+    find_hermes_sessions,
     find_pi_session_files,
     parse_claude_session,
     parse_codex_session,
     parse_grok_session,
+    parse_hermes_session,
     parse_pi_session,
     parse_zcode_session,
     session_matches_repos,
@@ -587,6 +589,101 @@ class StreamingSessionReadTests(unittest.TestCase):
             self.assertEqual(entries[100], ("note", "[... 61 entries omitted ...]"))
             self.assertEqual(entries[101], ("assistant", "message-161"))
             self.assertEqual(entries[-1], ("assistant", "message-200"))
+
+
+class HermesCollectorTests(unittest.TestCase):
+    def _make_db(self, root):
+        import sqlite3
+
+        db_path = root / "state.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            """CREATE TABLE sessions (
+                id TEXT, source TEXT, cwd TEXT, title TEXT, display_name TEXT,
+                parent_session_id TEXT, started_at REAL, last_activity_at REAL, ended_at REAL)"""
+        )
+        conn.execute(
+            """CREATE TABLE messages (
+                session_id TEXT, role TEXT, content TEXT, tool_calls TEXT, timestamp REAL)"""
+        )
+        return conn
+
+    def test_parse_hermes_session_extracts_stats_and_skills(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._make_db(Path(tmp))
+            base = 1_800_000_000.0
+            conn.execute(
+                "INSERT INTO sessions VALUES ('s1','cli','/tmp/repo','t','d',NULL,?,?,?)",
+                (base, base + 60, base + 60),
+            )
+            conn.execute(
+                "INSERT INTO messages VALUES ('s1','user','do the thing',NULL,?)", (base,)
+            )
+            tool_calls = json.dumps([
+                {"function": {"name": "skill_view", "arguments": "{\"name\":\"my-skill\"}"}},
+                {"function": {"name": "terminal", "arguments": "ls"}},
+            ])
+            conn.execute(
+                "INSERT INTO messages VALUES ('s1','assistant','ok',?,?)", (tool_calls, base + 1)
+            )
+            conn.execute(
+                "INSERT INTO messages VALUES ('s1','tool','error: boom',NULL,?)", (base + 2,)
+            )
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM sessions").fetchone()
+
+            parsed = parse_hermes_session(conn, row, {"my-skill"}, False)
+
+            self.assertIsNotNone(parsed)
+            meta, stats, entries, skills_used = parsed
+            self.assertEqual(meta["id"], "s1")
+            self.assertEqual(stats["user_turns"], 1)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(stats["tool_calls"], 2)
+            self.assertEqual(stats["error_outputs"], 1)
+            self.assertEqual(skills_used, ["my-skill"])
+
+    def test_parse_hermes_session_skips_subagents(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = self._make_db(Path(tmp))
+            base = 1_800_000_000.0
+            conn.execute(
+                "INSERT INTO sessions VALUES ('s2','subagent','/tmp',NULL,NULL,'parent',?,?,?)",
+                (base, base, base),
+            )
+            conn.execute(
+                "INSERT INTO messages VALUES ('s2','assistant','hi',?,?)",
+                (json.dumps([{"function": {"name": "terminal", "arguments": "ls"}}]), base),
+            )
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM sessions").fetchone()
+
+            self.assertIsNone(parse_hermes_session(conn, row, set(), False))
+            self.assertIsNotNone(parse_hermes_session(conn, row, set(), True))
+
+    def test_find_hermes_sessions_filters_by_cutoff(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            conn = self._make_db(root)
+            old, new = 1_000_000_000.0, datetime.now(tz=timezone.utc).timestamp()
+            for sid, ts in (("old", old), ("new", new)):
+                conn.execute(
+                    "INSERT INTO sessions VALUES (?,?,?,?,?,NULL,?,?,?)",
+                    (sid, "cli", "/tmp", None, None, ts, ts, ts),
+                )
+            conn.commit()
+            conn.close()
+
+            records, scanned = find_hermes_sessions(
+                [root / "state.db"], datetime.fromtimestamp(new - 60, tz=timezone.utc)
+            )
+
+            self.assertEqual(scanned, 1)
+            self.assertEqual([row["id"] for _, row in records], ["new"])
 
 
 if __name__ == "__main__":
