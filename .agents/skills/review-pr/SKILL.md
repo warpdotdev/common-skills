@@ -27,6 +27,8 @@ Review the current pull request and write the output to `review.json`.
 - If a concern involves untouched code, mention it in top-level `body` instead of an inline comment.
 - Do not suggest adding test cases that only vary constructor inputs or struct fields when the existing test already covers the meaningful behavior. Only suggest new tests when they exercise a distinct code path or edge case.
 - When a PR is clearly a V0 or initial implementation, frame robustness suggestions (timeouts, retries, lifecycle management) as optional future work rather than blocking concerns, unless they risk correctness, security, or data loss.
+- Before filing a sensitive-data-exposure, injection, or encoding finding, trace how the value is actually produced in this repository. If no concrete path admits the hazardous input, drop the finding or raise it as an open question in top-level `body` instead of asserting it as a `[SECURITY]` issue. Reviewers consistently reject speculative "this string could contain secrets" and "this identifier could contain a path separator" claims when the producing code makes that impossible.
+- Treat an interactive element with no handler in a UI PR (a button, menu item, or action that does nothing) as a likely intentional placeholder for a follow-up PR. Use at most `💡 [SUGGESTION]`, or raise it in top-level `body`, unless the PR description or the code claims the behavior already works.
 
 ## Repository-specific guidance
 
