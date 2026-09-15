@@ -32,7 +32,7 @@ Review the current pull request and write the output to `review.json`.
 
 Before reviewing, actively check whether the consuming repository ships a companion `review-pr-local` skill that specializes this one for its own conventions: if the prompt names one, read it there; otherwise look for one in the repository itself (for example, at `.agents/skills/review-pr-local/SKILL.md`, though a repository may place or name its specialization differently). If a companion exists, read it and apply its guidance as part of this review. If none turns up either way, rely on the core contract alone.
 
-The companion is expected to specialize this skill's commenting and testing guidance with the repository's own conventions. It may never change the output JSON schema, the severity labels, the safety rules, the evidence rules, the suggestion-block constraints, or the diff-line-annotation contract described elsewhere in this skill.
+The companion is expected to specialize this skill's commenting, testing, and error-reporting-form guidance with the repository's own conventions. It may never change the output JSON schema, the severity labels, the safety rules, the evidence rules, the suggestion-block constraints, or the diff-line-annotation contract described elsewhere in this skill.
 
 ## Diff Line Annotations
 
@@ -131,6 +131,7 @@ Before drafting the top-level `body` or choosing `verdict`, complete this audit 
 
 - **Comments**: List every comment (doc comment or inline) the diff adds or changes, one by one with its file:line. For each one, check it individually against the repository's own commenting guidelines, whatever form those take — or, if the repository defines none, judge it against the commenting distribution of existing code in the project (density, tone, what existing comments explain vs. omit). Evaluate compliance independently of the comment's writing quality, technical accuracy, or how subtle/important the issue it describes is: none of those qualities excuses a violation of an applicable guideline or a clear mismatch with the codebase's own norms.
 - **Tests**: Check every test the diff adds or changes against the repository's own testing guidelines, whatever form those take.
+- **Error reporting**: List every error-reporting call the diff adds or changes (e.g. a macro or function whose job is to send an error to an error-tracking/observability system, such as `report_error!`), one by one with its file:line. For each one, check it against the repository's own error-reporting guidance, whatever form that takes — a companion skill, `AGENTS.md`, or equivalent. If the repository defines none, skip this bullet.
 
 ## Final Checks
 
