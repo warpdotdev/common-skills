@@ -80,6 +80,11 @@ Follow it. The guidance below applies where the template is silent.
   linking keys. Check that the marker is live where the template puts it. Some templates
   show a marker inside an HTML comment that the parser strips, which means a marker left
   in place is silently ignored. Confirm against the parser or a merged PR.
+- When a repository convention (a `CONTRIBUTING` doc, `WARP.md`/`AGENTS.md`, or the
+  template's own instructions) requires a marker and the template's only trace of it is a
+  syntax example wrapped in an HTML comment, that comment is the authoring guide, not the
+  fill-in field. Add the real marker as live text in the body yourself; do not treat the
+  whole block as optional or skip it because the template shows it commented out.
 - Instructional HTML comments can go once you have answered them.
 
 When no template exists, use this shape, which is the same shape a template would give
