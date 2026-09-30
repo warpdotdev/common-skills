@@ -49,13 +49,13 @@ This helps you:
 - Catch unintended changes before review
 - Write an accurate PR description
 - Ensure you're comparing against the correct base branch
-- **Tests:** Include tests when required—bug fixes (regression test), algorithmic code (unit tests), UI components (layout test), P0 use cases (integration test). See Testing Requirements below.
+- **Tests:** Check that relevant tests cover the change and passed for the current candidate—bug fixes (regression test), algorithmic code (unit tests), UI components (layout test), P0 use cases (integration test). See Testing Requirements below.
 
 ### 3. Respect implementation agent validation
 
-PR creation is not a validation boundary. If the implementation workflow already completed its tests, lint checks, and final formatting pass and the candidate has not changed, do not rerun them.
+PR creation is not a validation boundary. Check the evidence that relevant tests passed for the current candidate; tests existing in the diff alone are not proof they ran. If the implementation workflow already completed its tests, lint checks, and final formatting pass and the candidate has not changed, reuse that evidence without rerunning checks or asking whether to validate again.
 
-If merging master or preparing the PR changed source, tests, manifests, generated code, or configuration, validate the new candidate in this order:
+If evidence is missing or the candidate changed (including source, tests, manifests, generated code, or configuration changed by merging master or preparing the PR), use suitable existing tests; when appropriate coverage is missing, add a targeted test proportionate to the risk rather than defaulting to an integration test. Validate this candidate in order:
 
 1. Run the relevant tests and fix the code until they pass.
 2. Run the applicable Clippy and other lint, typecheck, or build checks and fix their findings. Return to affected tests only when a fix materially changes behavior.
@@ -173,20 +173,16 @@ fn test_component_can_layout() {
 }
 ```
 
-### Ask before skipping integration coverage
+### Choose integration coverage based on risk
 
-If the PR changes a user-visible flow, fixes an end-to-end regression, or otherwise looks like it would benefit from integration coverage, use the `ask_user_question` tool before creating or updating the PR to ask whether the user wants an integration test added as part of the work.
+Do not ask about adding an integration test merely because a change is user-visible or a PR was requested. Check whether existing tests already exercise the changed behavior and passed for the current candidate. Unit or layout tests may be sufficient for contained changes.
 
-Prefer a direct choice such as:
-
-- `Yes, add an integration test before creating the PR`
-- `No, continue without an integration test`
-
-If the user chooses to add one, use the `warp-integration-test` skill.
+Add or update integration coverage when the defect or critical behavior depends on a full user-facing flow or interactions that targeted tests cannot establish; P0 use cases always require it. Run any newly added or changed test, but do not duplicate adequate coverage or rerun passing tests for an unchanged candidate solely to open the PR. Ask the user only when a genuine decision about scope remains after investigating, not as a routine pre-PR gate.
 
 ### P0 use cases require integration tests
 
 **All "P0 use cases" require an integration test** that covers the behavior/flow in question.
+An existing integration test satisfies this requirement when it covers the changed behavior and passed for the current candidate; add one only when that coverage is missing.
 
 **A "P0 use case" is defined as:** Any behavior of the application that, if broken, warrants an out-of-band release.
 
