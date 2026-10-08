@@ -446,6 +446,10 @@ def parse_codex_session(path: Path, skill_names, include_subagents: bool):
 
     meta = {}
     stats = {"user_turns": 0, "assistant_turns": 0, "tool_calls": 0, "repeated_tool_calls": 0, "error_outputs": 0}
+    # Codex writes visible messages two ways: legacy event_msg records, and
+    # response_item messages. Some rollouts only carry the response items, so
+    # tally both and reconcile at the end rather than trusting either alone.
+    item_turns = {"user": 0, "assistant": 0}
     entries = TranscriptBuffer()
     seen_calls = {}
     skills_used = set()
@@ -495,8 +499,13 @@ def parse_codex_session(path: Path, skill_names, include_subagents: bool):
                 if role == "user":
                     if looks_injected(text):
                         continue
+                    item_turns["user"] += 1
                     entries.append(("user", truncate(text, MAX_MSG_CHARS)))
                 elif role == "assistant":
+                    # Commentary-channel items are intermediate narration; only
+                    # final replies correspond to a legacy agent_message event.
+                    if payload.get("channel") in (None, "final"):
+                        item_turns["assistant"] += 1
                     entries.append(("assistant", truncate(text, MAX_MSG_CHARS)))
             elif ptype in ("function_call", "custom_tool_call", "local_shell_call"):
                 stats["tool_calls"] += 1
@@ -525,6 +534,10 @@ def parse_codex_session(path: Path, skill_names, include_subagents: bool):
     if not meta:
         meta = {"id": path.stem, "cwd": None, "started_at": first_ts}
 
+    # A rollout with both record kinds counts each message twice across the two
+    # tallies, so take the larger tally per role instead of summing them.
+    stats["user_turns"] = max(stats["user_turns"], item_turns["user"])
+    stats["assistant_turns"] = max(stats["assistant_turns"], item_turns["assistant"])
     stats["first_ts"] = first_ts
     stats["last_ts"] = last_ts
     stats["has_code_edits"] = has_code_edits

@@ -3,6 +3,8 @@
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -23,6 +25,7 @@ from collect_sessions import (
 )
 
 PREVIOUS_FILE_LIMIT = 8 * 1024 * 1024
+COLLECTOR = Path(__file__).resolve().with_name("collect_sessions.py")
 
 
 def write_jsonl(path, records):
@@ -479,6 +482,154 @@ class ZcodeSessionTests(unittest.TestCase):
             path.write_text("{\"unrelated\": true}\n")
 
             self.assertIsNone(parse_zcode_session(path, set(), False))
+
+
+class CodexSessionTests(unittest.TestCase):
+    def _message(self, role, text, **extra):
+        return {
+            "type": "response_item",
+            "payload": {
+                "type": "message",
+                "role": role,
+                "content": [{"type": "input_text" if role == "user" else "output_text", "text": text}],
+                **extra,
+            },
+        }
+
+    def test_counts_turns_from_response_items_without_legacy_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "codex.jsonl"
+            write_jsonl(path, [
+                {"type": "session_meta", "payload": {"id": "codex-session", "cwd": "/tmp/repo"}},
+                self._message("user", "Inspect a sample file."),
+                {
+                    "type": "response_item",
+                    "payload": {
+                        "type": "custom_tool_call",
+                        "name": "functions.exec",
+                        "call_id": "call-1",
+                        "input": "print('synthetic')",
+                    },
+                },
+                {
+                    "type": "response_item",
+                    "payload": {"type": "custom_tool_call_output", "call_id": "call-1", "output": "synthetic"},
+                },
+                self._message("assistant", "Inspection complete.", channel="final"),
+            ])
+
+            _, stats, entries, _ = parse_codex_session(path, set(), False)
+
+            self.assertEqual(stats["user_turns"], 1)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(stats["tool_calls"], 1)
+            self.assertIn(("user", "Inspect a sample file."), entries)
+            self.assertIn(("assistant", "Inspection complete."), entries)
+
+    def test_does_not_double_count_when_both_record_kinds_are_present(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "codex.jsonl"
+            write_jsonl(path, [
+                {"type": "session_meta", "payload": {"id": "codex-session", "cwd": "/tmp/repo"}},
+                {"type": "event_msg", "payload": {"type": "user_message", "message": "Hi"}},
+                self._message("user", "Hi"),
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "Hello"}},
+                self._message("assistant", "Hello", channel="final"),
+                {"type": "event_msg", "payload": {"type": "agent_message", "message": "Done"}},
+                self._message("assistant", "Done", channel="final"),
+            ])
+
+            _, stats, _, _ = parse_codex_session(path, set(), False)
+
+            self.assertEqual(stats["user_turns"], 1)
+            self.assertEqual(stats["assistant_turns"], 2)
+
+    def test_commentary_items_do_not_count_as_assistant_turns(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "codex.jsonl"
+            write_jsonl(path, [
+                {"type": "session_meta", "payload": {"id": "codex-session", "cwd": "/tmp/repo"}},
+                self._message("user", "Fix the bug."),
+                self._message("assistant", "Looking at the file now.", channel="commentary"),
+                self._message("assistant", "Fixed.", channel="final"),
+            ])
+
+            _, stats, entries, _ = parse_codex_session(path, set(), False)
+
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertIn(("assistant", "Looking at the file now."), entries)
+            self.assertIn(("assistant", "Fixed."), entries)
+
+
+class CodexCollectorEndToEndTests(unittest.TestCase):
+    def test_response_item_only_rollout_is_considered_and_sampled(self):
+        # Regression for #98: the parser counted zero turns for a rollout whose
+        # visible messages are only response_item records, so the collector
+        # dropped it before sampling and reported 0 considered / 0 sampled.
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            project = root / "project"
+            project.mkdir()
+            codex_home = root / "codex-home"
+            out_dir = root / "report"
+            now = datetime.now(timezone.utc).isoformat()
+
+            def item(payload):
+                return {"timestamp": now, "type": "response_item", "payload": payload}
+
+            write_jsonl(codex_home / "sessions" / "rollout-synthetic.jsonl", [
+                {
+                    "timestamp": now,
+                    "type": "session_meta",
+                    "payload": {
+                        "id": "synthetic-session",
+                        "cwd": str(project),
+                        "timestamp": now,
+                        "originator": "codex",
+                    },
+                },
+                item({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{"type": "input_text", "text": "Inspect a sample file."}],
+                }),
+                item({
+                    "type": "custom_tool_call",
+                    "name": "functions.exec",
+                    "call_id": "synthetic-call",
+                    "input": "print('synthetic')",
+                }),
+                item({
+                    "type": "custom_tool_call_output",
+                    "call_id": "synthetic-call",
+                    "output": "synthetic",
+                }),
+                item({
+                    "type": "message",
+                    "role": "assistant",
+                    "channel": "final",
+                    "content": [{"type": "output_text", "text": "Inspection complete."}],
+                }),
+            ])
+
+            run = subprocess.run(
+                [
+                    sys.executable, str(COLLECTOR),
+                    "--harness", "codex",
+                    "--codex-home", str(codex_home),
+                    "--repo", str(project),
+                    "--out", str(out_dir),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(run.returncode, 0, run.stderr)
+            inventory = json.loads((out_dir / "inventory.json").read_text())
+            self.assertEqual(inventory["stats"]["sessions_in_scope"], 1)
+            self.assertEqual(inventory["stats"]["sessions_considered"], 1)
+            self.assertEqual(inventory["stats"]["sessions_sampled"], 1)
+            self.assertEqual(len(list((out_dir / "transcripts").iterdir())), 1)
 
 
 class StreamingSessionReadTests(unittest.TestCase):
