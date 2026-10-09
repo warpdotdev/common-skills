@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+
+# Best-effort installer for the internal warpdotdev/warp-skills skills pinned in
+# warp-skills-lock.json. Thin wrapper over install_common_skills; optional and
+# never required for external contributors (it skips cleanly without access).
+
+set -eo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+for arg in "$@"; do
+  case "${arg}" in
+    --skip-warp-skills)
+      echo "warp-skills install skipped (--skip-warp-skills)."
+      exit 0
+      ;;
+  esac
+done
+
+if [[ "${WARP_SKIP_WARP_SKILLS_INSTALL:-}" = "1" ]]; then
+  echo "warp-skills install skipped (WARP_SKIP_WARP_SKILLS_INSTALL=1)."
+  exit 0
+fi
+
+# Match the common-skills target rule: project unless the shared target env is
+# global. An explicit --project/--global in "$@" still wins, since
+# install_common_skills honors the last target flag it sees.
+target="${WARP_COMMON_SKILLS_INSTALL_TARGET:-project}"
+case "${target}" in
+  project|global) ;;
+  *) target="project" ;;
+esac
+
+
+exec "${SCRIPT_DIR}/install_common_skills" \
+  --source warpdotdev/warp-skills \
+  --lock-file warp-skills-lock.json \
+  --label warp \
+  --best-effort \
+  "--${target}" \
+  "$@"

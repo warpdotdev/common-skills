@@ -4,7 +4,12 @@ set -eo pipefail
 
 REPO_ROOT="${WARP_COMMON_SKILLS_TARGET_REPO_ROOT:-$(pwd)}"
 LOCK_FILE=""
-STAMP_RELATIVE_PATH="warp/common-skills-lock.hash"
+LOCK_FILE_NAME="skills-lock.json"
+LABEL="common"
+LABEL_TITLE="Common"
+BEST_EFFORT=0
+STAMP_BASENAME="common-skills-lock.hash"
+STAMP_RELATIVE_PATH="warp/${STAMP_BASENAME}"
 SKILLS_CLI_VERSION="1.5.6"
 COMMON_SKILLS_SOURCE="warpdotdev/common-skills"
 COMMON_SKILLS_REF="${WARP_COMMON_SKILLS_REF:-}"
@@ -22,10 +27,6 @@ TARGET="${WARP_COMMON_SKILLS_INSTALL_TARGET:-}"
 RESOLVED_TARGET=""
 ALLOW_GLOBAL_LOCK_UPDATE=0
 UPDATED_LOCK_CANDIDATE=""
-
-if [[ -n "${COMMON_SKILLS_REF}" ]]; then
-  COMMON_SKILLS_REQUEST_SOURCE="${COMMON_SKILLS_SOURCE}#${COMMON_SKILLS_REF}"
-fi
 
 resolve_repo_root() {
   cd "$1" && pwd
@@ -50,7 +51,7 @@ project_stamp_file() {
     return
   fi
 
-  echo "${REPO_ROOT}/.agents/skills/.common-skills-lock.hash"
+  echo "${REPO_ROOT}/.agents/skills/.${STAMP_BASENAME}"
 }
 
 project_exclude_file() {
@@ -72,7 +73,7 @@ project_exclude_file() {
 }
 
 global_stamp_file() {
-  echo "${HOME}/.agents/warp/common-skills-lock.hash"
+  echo "${HOME}/.agents/warp/${STAMP_BASENAME}"
 }
 
 stamp_file() {
@@ -191,6 +192,10 @@ Options:
   --force              Install even if the local stamp is already up to date.
   --quiet              Suppress "already up to date" informational output.
   --verify-only        Verify common skills without installing or updating them.
+  --source <owner/repo>  Skills source repository (default: warpdotdev/common-skills).
+  --lock-file <name>   Lockfile name within the repo (default: skills-lock.json).
+  --label <name>       Label used for stamp and messages (default: common).
+  --best-effort        On any failure or missing lock, print a notice and exit 0 (keeps an optional set like warp-skills from blocking the caller).
   -h, --help           Show this help message.
 
 Environment:
@@ -497,13 +502,25 @@ install_project_from_source() {
 }
 
 install_project_from_lock() {
-  (
-    cd "${REPO_ROOT}"
-    npx --yes "skills@${SKILLS_CLI_VERSION}" experimental_install
-  ) < /dev/null
+  # The skills CLI reads a file literally named skills-lock.json in its working
+  # directory. The default project lock already has that name, so install in
+  # place; any other lock (e.g. warp-skills-lock.json) installs via a temp dir.
+  if [[ "${LOCK_FILE_NAME}" = "skills-lock.json" ]]; then
+    (
+      cd "${REPO_ROOT}"
+      npx --yes "skills@${SKILLS_CLI_VERSION}" experimental_install
+    ) < /dev/null
+  else
+    install_lock_into_dir "${REPO_ROOT}/.agents/skills"
+  fi
 }
 
 install_global_from_lock() {
+  install_lock_into_dir "${HOME}/.agents/skills"
+}
+
+install_lock_into_dir() {
+  local target_skills_dir="$1"
   local skill_names=()
   local name=""
   local temp_dir=""
@@ -518,15 +535,31 @@ install_global_from_lock() {
     exit 1
   fi
 
-  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/common-skills-global-install.XXXXXX")"
+  temp_dir="$(mktemp -d "${TMPDIR:-/tmp}/skills-lock-install.XXXXXX")"
   cp "${LOCK_FILE}" "${temp_dir}/skills-lock.json"
 
-  (
+  if ! (
     cd "${temp_dir}"
+    # Best-effort installs must not block on a credential prompt when the source
+    # repo is inaccessible (e.g. external contributors without warp access);
+    # fail fast and let the caller skip instead.
+    if [[ "${BEST_EFFORT}" -eq 1 ]]; then
+      export GIT_TERMINAL_PROMPT=0
+    fi
     npx --yes "skills@${SKILLS_CLI_VERSION}" experimental_install
-  ) < /dev/null
+  ) < /dev/null; then
+    rm -rf "${temp_dir}"
+    # Best-effort: a failed install (e.g. no repo access) is non-fatal — emit a
+    # notice and exit 0 so the caller (bootstrap/run) continues.
+    if [[ "${BEST_EFFORT}" -eq 1 ]]; then
+      echo "${LABEL}-skills not installed (no access) — skipping."
+      exit 0
+    fi
+    echo "error: failed to install skills from ${LOCK_FILE}" >&2
+    exit 1
+  fi
 
-  mkdir -p "${HOME}/.agents/skills"
+  mkdir -p "${target_skills_dir}"
   for name in "${skill_names[@]}"; do
     skill_dir="${temp_dir}/.agents/skills/${name}"
     if [[ ! -d "${skill_dir}" ]]; then
@@ -535,8 +568,8 @@ install_global_from_lock() {
       exit 1
     fi
 
-    rm -rf -- "${HOME}/.agents/skills/${name}"
-    cp -R "${skill_dir}" "${HOME}/.agents/skills/${name}"
+    rm -rf -- "${target_skills_dir}/${name}"
+    cp -R "${skill_dir}" "${target_skills_dir}/${name}"
   done
 
   rm -rf "${temp_dir}"
@@ -578,8 +611,8 @@ ensure_project_common_skills_ignored() {
   local path=""
   local skill_dir=""
   local tmp_file=""
-  local marker_start="# BEGIN warp common-skills"
-  local marker_end="# END warp common-skills"
+  local marker_start="# BEGIN warp ${LABEL}-skills"
+  local marker_end="# END warp ${LABEL}-skills"
 
   if [[ "${TARGET}" != "project" ]]; then
     return 0
@@ -669,7 +702,7 @@ verify_common_skills() {
     exit 1
   fi
 
-  node - "${LOCK_FILE}" "${REPO_ROOT}" "${HOME}" "${TARGET}" "${QUIET}" "$(global_stamp_file)" <<'NODE'
+  node - "${LOCK_FILE}" "${REPO_ROOT}" "${HOME}" "${TARGET}" "${QUIET}" "$(global_stamp_file)" "${LABEL_TITLE}" "${LOCK_FILE_NAME}" <<'NODE'
 const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
@@ -680,6 +713,8 @@ const home = process.argv[4];
 let target = process.argv[5];
 const quiet = process.argv[6] === "1";
 const globalStampFile = process.argv[7];
+const labelTitle = process.argv[8];
+const lockFileName = process.argv[9];
 
 function fail(messages) {
   for (const message of messages) {
@@ -791,7 +826,7 @@ function verifyTarget(skills, installTarget) {
     const normalizedComputedHash =
       computedHash === skill.computedHash ? computedHash : computeSkillFolderHash(skillDir, true);
     if (normalizedComputedHash !== skill.computedHash) {
-      errors.push(`error: ${name} does not match skills-lock.json`);
+      errors.push(`error: ${name} does not match ${lockFileName}`);
       errors.push(`  expected: ${skill.computedHash}`);
       errors.push(`  actual:   ${computedHash}`);
     }
@@ -838,7 +873,7 @@ if (target) {
 
 verifyTarget(skills, target);
 if (!quiet) {
-  console.log(`Common skills are installed in ${target === "global" ? "~/.agents/skills" : ".agents/skills"} and match skills-lock.json.`);
+  console.log(`${labelTitle} skills are installed in ${target === "global" ? "~/.agents/skills" : ".agents/skills"} and match ${lockFileName}.`);
 }
 NODE
 }
@@ -887,6 +922,40 @@ while [[ $# -gt 0 ]]; do
       VERIFY_ONLY=1
       shift
       ;;
+    --source)
+      if [[ -n "${2:-}" ]]; then
+        COMMON_SKILLS_SOURCE="$2"
+        shift 2
+      else
+        echo "error: argument for $1 is missing" >&2
+        usage >&2
+        exit 1
+      fi
+      ;;
+    --lock-file)
+      if [[ -n "${2:-}" ]]; then
+        LOCK_FILE_NAME="$2"
+        shift 2
+      else
+        echo "error: argument for $1 is missing" >&2
+        usage >&2
+        exit 1
+      fi
+      ;;
+    --label)
+      if [[ -n "${2:-}" ]]; then
+        LABEL="$2"
+        shift 2
+      else
+        echo "error: argument for $1 is missing" >&2
+        usage >&2
+        exit 1
+      fi
+      ;;
+    --best-effort)
+      BEST_EFFORT=1
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -903,7 +972,14 @@ if ! REPO_ROOT="$(resolve_repo_root "${REPO_ROOT}")"; then
   echo "error: repo root does not exist: ${REPO_ROOT}" >&2
   exit 1
 fi
-LOCK_FILE="${REPO_ROOT}/skills-lock.json"
+LOCK_FILE="${REPO_ROOT}/${LOCK_FILE_NAME}"
+STAMP_BASENAME="${LABEL}-skills-lock.hash"
+STAMP_RELATIVE_PATH="warp/${STAMP_BASENAME}"
+LABEL_TITLE="$(printf '%s' "${LABEL:0:1}" | tr '[:lower:]' '[:upper:]')${LABEL:1}"
+COMMON_SKILLS_REQUEST_SOURCE="${COMMON_SKILLS_SOURCE}"
+if [[ -n "${COMMON_SKILLS_REF}" ]]; then
+  COMMON_SKILLS_REQUEST_SOURCE="${COMMON_SKILLS_SOURCE}#${COMMON_SKILLS_REF}"
+fi
 if [[ "${WARP_SKIP_COMMON_SKILLS_INSTALL:-}" = "1" ]]; then
   log "Skipping common-skills install because WARP_SKIP_COMMON_SKILLS_INSTALL=1."
   exit 0
@@ -926,10 +1002,20 @@ if [[ "${VERIFY_ONLY}" -eq 1 ]]; then
   verify_common_skills
   exit 0
 fi
+if [[ "${BEST_EFFORT}" -eq 1 ]]; then
+  for required_tool in git node npm npx; do
+    if ! command -v "${required_tool}" >/dev/null 2>&1; then
+      log "${LABEL}-skills not installed (required tooling '${required_tool}' unavailable) — skipping."
+      exit 0
+    fi
+  done
+fi
 validate_install_dependencies
-maybe_prompt_for_upstream_lock_update
+if [[ "${BEST_EFFORT}" -ne 1 ]]; then
+  maybe_prompt_for_upstream_lock_update
+fi
 if [[ "${FORCE}" -ne 1 && "${IF_NEEDED}" -eq 1 && -z "${TARGET}" ]] && common_skills_already_up_to_date_without_target; then
-  log "Common skills are already up to date."
+  log "${LABEL_TITLE} skills are already up to date."
   exit 0
 fi
 fail_if_target_requires_unavailable_prompt
@@ -940,7 +1026,14 @@ if ! RESOLVED_TARGET="$(resolve_common_skills_target)"; then
 fi
 TARGET="${RESOLVED_TARGET}"
 if [[ ! -f "${LOCK_FILE}" ]]; then
-  echo "Creating skills-lock.json from ${COMMON_SKILLS_REQUEST_SOURCE}."
+  # A committed lock is how a consumer opts into a set. For best-effort sets
+  # (warp-skills), a missing lock means "not adopted", so skip rather than
+  # create one — creating needs source access and would add an unreviewed lock.
+  if [[ "${BEST_EFFORT}" -eq 1 ]]; then
+    log "${LABEL}-skills not installed (no ${LOCK_FILE_NAME} present) — skipping."
+    exit 0
+  fi
+  echo "Creating ${LOCK_FILE_NAME} from ${COMMON_SKILLS_REQUEST_SOURCE}."
   install_project_from_source
   if [[ ! -f "${LOCK_FILE}" ]]; then
     echo "error: expected ${LOCK_FILE} to be created by skills add" >&2
@@ -970,12 +1063,12 @@ fail_if_global_lock_mismatch
 ensure_project_common_skills_ignored
 
 if [[ "${FORCE}" -ne 1 && "${IF_NEEDED}" -eq 1 && "${STAMP_HASH}" = "${LOCK_HASH}" ]] && locked_skills_installed; then
-  log "Common skills are already up to date."
+  log "${LABEL_TITLE} skills are already up to date."
   verify_common_skills
   exit 0
 fi
 
-echo "Installing common agent skills from skills-lock.json into $(target_description)."
+echo "Installing ${LABEL} agent skills from ${LOCK_FILE_NAME} into $(target_description)."
 install_from_lock
 LOCK_HASH="$(lock_hash)"
 mkdir -p "$(dirname "${STAMP_FILE}")"

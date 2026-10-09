@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+
+# Remove the internal warpdotdev/warp-skills skills listed in
+# warp-skills-lock.json. Thin wrapper over remove_common_skills.
+
+set -eo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+exec "${SCRIPT_DIR}/remove_common_skills" \
+  --lock-file warp-skills-lock.json \
+  --label warp \
+  "$@"
