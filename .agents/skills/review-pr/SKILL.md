@@ -27,6 +27,9 @@ Review the current pull request and write the output to `review.json`.
 - If a concern involves untouched code, mention it in top-level `body` instead of an inline comment.
 - Do not suggest adding test cases that only vary constructor inputs or struct fields when the existing test already covers the meaningful behavior. Only suggest new tests when they exercise a distinct code path or edge case.
 - When a PR is clearly a V0 or initial implementation, frame robustness suggestions (timeouts, retries, lifecycle management) as optional future work rather than blocking concerns, unless they risk correctness, security, or data loss.
+- Do not flag issues in generated files (for example `*.gen.go`, `*_gen.go`, or files carrying a generated-code header) as if they were hand-maintained. Generators rename and update all variants together, so apparent breakages or renamed identifiers there are usually intended codegen output rather than a defect introduced by the PR.
+- Before flagging a state-dependent bug (duplicate or stale selections, missing input masking, a missing guard), confirm it is actually reachable given the current control flow and existing global safeguards. If the current flow already prevents it and the concern only protects a hypothetical future caller, omit it or downgrade to a `💡 [SUGGESTION]` framed as optional defense-in-depth.
+- When raising an authorization or data-scoping concern, first trace how the identifier reaches the code path and whether it is already viewer- or principal-scoped (for example, objects that only enter the graph through viewer-scoped fields), and account for domain invariants that may make the scenario impossible. Do not assert a `🚨 [CRITICAL]` or `⚠️ [IMPORTANT]` security hole unless the untrusted entry path is confirmed; when it is unverified, raise it as an open question in the top-level `body` instead of an inline assertion, or omit it.
 
 ## Repository-specific guidance
 
