@@ -1,15 +1,15 @@
 ---
 name: write-tech-spec
-description: Write a TECH.md spec for a significant Warp feature after researching the current codebase and implementation constraints. Use when the user asks for a technical spec, implementation plan, or architecture doc tied to a product spec.
+description: Writes an implementation-oriented TECH.md spec. Use when the user asks for a technical spec, implementation plan, architecture document, or technical design.
 ---
 
 # write-tech-spec
 
-Write a `TECH.md` spec for a significant feature in Warp.
+Write a `TECH.md` spec for significant technical work in Warp.
 
 ## Overview
 
-The tech spec should translate product intent into an implementation plan that fits the existing codebase, documents architectural choices, and makes the work easier for agents to execute and reviewers to evaluate.
+The tech spec should translate the desired outcome into an implementation plan that fits the existing codebase, documents architectural choices, and makes the work easier for agents to execute and reviewers to evaluate. It may stand alone or accompany `PRODUCT.md`; do not create a product spec merely to anchor a technical design.
 
 Write specs to `specs/<id>/TECH.md`, where `<id>` is one of:
 
@@ -21,11 +21,13 @@ Match the id used by the sibling `PRODUCT.md` when one exists. `specs/` should c
 
 Ticket / issue references are optional. If the user has a Linear ticket or GitHub issue, use its id. If they don't, ask them for a feature name to use as the directory. Only create a new Linear ticket or GitHub issue when the user explicitly asks for one; in that case use the Linear MCP tools or `gh` CLI respectively (and `ask_user_question` if team, labels, or repo are unclear).
 
-## When to use
+## Right-size `TECH.md` around its independent value
 
-Use this skill when the implementation spans multiple modules, has meaningful architectural tradeoffs, or when reviewers will benefit from seeing the plan before or alongside the code. For pure UI changes or straightforward fixes, a tech spec is often unnecessary.
+If the artifact set has not been chosen, use `spec-driven-implementation` to decide which specs add value. When the user directly asks for `TECH.md`, honor that choice. Right-size the requested document to the amount of technical ambiguity, risk, and implementation detail that reviewers need: a local change using established patterns can be brief, while cross-cutting work or meaningful tradeoffs warrant more detail.
 
-Prefer to have a `PRODUCT.md` first so the technical plan is anchored to agreed behavior. If the implementation is still too uncertain, build an e2e prototype first and then write the tech spec from what was learned.
+Use every approved companion spec as input. When no `PRODUCT.md` exists, include concise `Technical safety and preservation guarantees` that capture the intended outcome and safety boundary. Keep this skill focused on the requested `TECH.md`; `spec-driven-implementation` owns artifact selection.
+
+If the implementation is too uncertain to specify accurately, recommend an e2e prototype before finalizing `TECH.md` rather than skipping the requested document.
 
 ## Research before writing
 
@@ -39,10 +41,14 @@ Required sections:
 1. **Context** — What's being built, how the current system works in the area being changed, and the most relevant files with line references. Combine the "problem," "current state," and "relevant code" into one grounded section. Example references:
    - [`app/src/workspace/mod.rs:42 @ <commit-sha>`](https://github.com/warpdotdev/warp/blob/<commit-sha>/app/src/workspace/mod.rs#L42) — entry point for the user flow
    - [`app/src/workspace/workspace.rs (120-220) @ <commit-sha>`](https://github.com/warpdotdev/warp/blob/<commit-sha>/app/src/workspace/workspace.rs#L120-L220) — state and event handling that will likely change
-   Reference `PRODUCT.md` for user-visible behavior rather than restating it.
+   Reference `PRODUCT.md` for consumer behavior when it exists; otherwise use the standalone Technical safety and preservation guarantees described below.
 2. **Proposed changes** — The implementation plan: which modules change, new types/APIs/state being introduced, data flow, ownership boundaries, and how the design follows existing patterns. Call out tradeoffs when there is more than one reasonable path.
-3. **Testing and validation** — How the implementation will be verified against the product behavior. Owns everything about proving the feature works: unit tests, integration tests, manual steps, screenshots, videos, and any other verification. Reference the numbered Behavior invariants from `PRODUCT.md` directly rather than restating them; each important invariant should map to a concrete test or verification step. This section is where validation lives — `PRODUCT.md` intentionally does not have a Validation section.
-4. **Parallelization** — Actively evaluate whether parallel sub-agents (launched via `run_agents`) would meaningfully reduce wall-clock time or isolate work. Skip this section if `run_agents` is not available. When the spec proposes using sub-agents, include for each proposed agent:
+3. **Testing and validation** — How the implementation will be verified against the intended behavior and technical risks. Owns everything about proving the change works: unit tests, integration tests, manual steps, screenshots, videos, and any other verification. Map each important technical guarantee and relevant product behavior to at least one concrete verification step without restating either as a second exhaustive matrix.
+
+Conditionally required sections:
+
+- **Technical safety and preservation guarantees** — Required when there is no companion `PRODUCT.md`; include it alongside `PRODUCT.md` when independently valuable technical guarantees remain. Capture roughly 3–8 stable, reviewable guarantees that define the outcome-preservation and safety boundary without duplicating product Behavior, the technical transition matrix, or the test plan. For hardening and bug fixes, these often state that normal consumer behavior remains unchanged, important state/data is preserved, recovery is conservative, and malformed or unsupported inputs cannot corrupt trustworthy state.
+- **Parallelization** — Include when `run_agents` is available. Actively evaluate whether parallel sub-agents would meaningfully reduce wall-clock time or isolate work. When the spec proposes using sub-agents, include for each proposed agent:
    - A short name/role and the subtask it owns.
    - Execution mode (`local` or `remote`) with a one-line rationale.
    - For local agents: the working directory or git worktree it should use, so parallel agents do not collide on the same checkout or files.
@@ -67,7 +73,7 @@ Optional sections — include only when they add signal. Omit the heading entire
 
 Right-size the spec to the feature:
 
-- Single-file change with clear approach: skip the tech spec or keep it under ~40 lines.
+- Single-file change with clear approach: keep the requested tech spec under ~40 lines.
 - Multi-module change with some ambiguity: target ~80–150 lines.
 - Large cross-cutting or architecturally novel change: longer is fine when every section earns its place.
 
@@ -79,12 +85,19 @@ If Context and Proposed changes end up describing the same files and state from 
 - Pin important code references to a commit SHA and link them to the corresponding GitHub lines when the repository has an accessible remote.
 - Prefer concrete implementation guidance over generic architecture language.
 - Explain why the proposed design fits this repo.
-- Reference `PRODUCT.md` for behavior instead of restating it.
+- Reference `PRODUCT.md` for meaningful consumer-behavior decisions when it exists. Keep Technical safety and preservation guarantees concise and stable, and do not translate every technical state or test case into guarantee language.
+- Treat every approved companion spec as input; artifact-set changes belong in `spec-driven-implementation`.
 - Each section should earn its place — if a section would repeat another or contain only boilerplate, omit it.
+
+## Approval handoff
+
+After drafting, present a concise summary of the material decisions, important tradeoffs, and unresolved questions. When called by `spec-driven-implementation`, return this handoff so that workflow can coordinate approval across the selected specs. When called directly, ask the user or another explicitly identified human approver to resolve or explicitly defer every question that would affect implementation, then ask them to approve the spec or request revisions before it is treated as ready for implementation.
 
 ## Keep the spec current
 
 Approved specs may ship in the same PR as the implementation. Update `TECH.md` in the same PR when module boundaries, implementation sequencing, risks, validation strategy, or rollout assumptions change. The checked-in spec should describe the implementation that actually ships.
+
+Present proposed material design or contract changes to the user or another explicitly identified human approver and get explicit approval before updating the approved spec. Treat the approved artifact set as settled while using this skill and return to `spec-driven-implementation` to revisit it; routine edits that keep the approved design current do not require renewed approval.
 
 For large features, the implementer may optionally keep a `DECISIONS.md` file summarizing concrete decisions. Offer it when it would help future agents; otherwise skip it.
 

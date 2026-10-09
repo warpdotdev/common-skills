@@ -1,38 +1,35 @@
 ---
 name: implement-specs
-description: Implement an approved feature from PRODUCT.md and TECH.md, keeping specs and code aligned in the same PR as implementation evolves. Use after the product and tech specs are approved and the next step is building the feature.
+description: Implements approved PRODUCT.md and/or TECH.md specs, keeping applicable specs and code aligned as implementation evolves. Use after the specs are approved and the next step is implementation.
 ---
 
 # implement-specs
 
-Implement an approved feature from `PRODUCT.md` and `TECH.md`.
+Implement approved work from `PRODUCT.md`, `TECH.md`, or both.
 
 ## Overview
 
-Use this skill after the product and tech specs are approved. The goal is to build the feature described by the specs while keeping the checked-in specs and the implementation aligned as the work evolves.
+Use this skill after the applicable specs are approved. The goal is to build the change described by the available specs while keeping those checked-in specs and the implementation aligned as the work evolves.
 
-Approved specs should live directly under a ticket-named directory in `specs/`, for example `specs/APP-1234/PRODUCT.md` and `specs/APP-1234/TECH.md`.
+Approved specs should live directly under `specs/<id>/`, for example `specs/APP-1234/PRODUCT.md`, `specs/gh-4567/TECH.md`, or both.
 
-In many cases, the implementation should be pushed in the same PR as the product and tech specs. As the engineer iterates, changes to `PRODUCT.md`, `TECH.md`, and the code should all be pushed in that same PR so review stays anchored to the feature that will actually ship.
+In many cases, the implementation should be pushed in the same PR as the applicable specs. As the engineer iterates, changes to those specs and the code should all be pushed in that same PR so review stays anchored to the change that will actually ship.
 
 ## Prerequisites
 
 Before using this skill:
 
-- confirm that `PRODUCT.md` exists
-- confirm that `TECH.md` exists when the feature warranted one
-- confirm that the relevant specs have been reviewed and approved enough to start implementation
+- identify and read every approved spec relevant to the change
+- confirm that at least one approved spec exists and has explicit approval to start implementation
+- confirm that every implementation-blocking open question has been resolved or explicitly deferred by the user or another explicitly identified human approver
+
+If the approval or disposition of an implementation-blocking question is not evident from the current context, ask before writing code.
 
 ## Workflow
 
 ### 1. Read the approved specs first
 
-Treat:
-
-- `PRODUCT.md` as the source of truth for user-facing behavior
-- `TECH.md` as the source of truth for architecture, sequencing, and implementation shape
-
-Make sure you understand the expected behavior, constraints, risks, and validation plan before writing code.
+Treat every approved spec as authoritative input to the intended change. Read all available specs before writing code and make sure you understand the expected behavior, design, constraints, risks, and validation plan.
 
 ### 2. Offer optional implementation aids for large features
 
@@ -45,27 +42,27 @@ These are optional aids, not required deliverables. Offer them when they would r
 
 ### 3. Plan and implement against the specs
 
-Break the work into concrete implementation steps, then implement the feature against the approved specs.
+Break the work into concrete implementation steps, then implement the change against the approved specs.
 
 During implementation:
 
-- keep behavior aligned with `PRODUCT.md`
-- keep architecture and sequencing aligned with `TECH.md`
+- keep behavior, design, and implementation aligned with all approved specs
 - add or update tests and verification artifacts as the work lands
 
-Use the same PR for the specs and implementation when practical so the full feature evolution is reviewable in one place.
+Use the same PR for the specs and implementation when practical so the full evolution of the change is reviewable in one place.
 
 ### 4. Update specs as the implementation evolves
 
-If implementation reveals that the intended behavior or design should change, update the checked-in specs rather than letting them go stale.
+A material change alters an approved behavior, guarantee, architectural decision, scope boundary, risk or rollout assumption, or validation expectation. A routine edit records factual implementation detail or clarifies wording while preserving every approved decision.
+
+When implementation reveals a proposed material change, describe its impact and get explicit approval from the user or another explicitly identified human approver before persisting it in the checked-in specs or acting on it in the implementation. Ask when the distinction between material and routine is unclear. Apply routine edits that keep the approved intent current.
 
 In particular:
 
-- update `PRODUCT.md` when user-facing behavior, UX, edge cases, or success criteria change
-- update `TECH.md` when architecture, sequencing, module boundaries, or validation strategy change
+- update whichever approved specs describe the changed behavior, design, constraints, risks, or validation
 - keep those updates in the same PR as the corresponding code changes
 
-The PR should describe the feature that actually ships, not just the initial draft of the specs.
+The PR should describe the change that actually ships, not just the initial draft of the specs.
 
 ### 5. Verify against the specs
 
@@ -76,12 +73,15 @@ Prefer:
 - unit tests and regression coverage that follow the repository's local testing conventions
 - integration or end-to-end tests for important user flows
 
+Map each important approved commitment to at least one concrete verification step without creating an exhaustive duplicate matrix.
+
 ## Best Practices
 
 - Keep specs and code synchronized throughout implementation.
-- Prefer updating the spec immediately when decisions change rather than batching spec cleanup until the end.
+- Treat the approved artifact set as settled input during implementation and surface material conflicts for review.
+- Record approved material decisions in the applicable specs promptly.
 - Use optional tracking documents only when they add real value for a complex feature.
-- Keep the same PR coherent: spec updates, code changes, tests, and optional tracking docs should all support the same feature narrative.
+- Keep the same PR coherent: spec updates, code changes, tests, and optional tracking docs should all support the same change narrative.
 
 ## Related Skills
 
