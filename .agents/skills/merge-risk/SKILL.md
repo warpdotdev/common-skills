@@ -25,7 +25,7 @@ These are the **categories** and **verdicts** that affect risk, with description
 - **Rollback cost [high ⚠️ / medium 👀 / low ✅]:** The code is reversible once merged. Consider one-way vs. two-way doors. You can walk back through two-way doors, but not one-way doors. A PR that is cheap to roll back is lower risk. Changes that involve destructive actions or hard-to-reverse decisions are one-way doors.
 - **Error detection [poor ⚠️ / decent 👀 / good ✅ / N/A ✅]:** If applicable, critical flows should be monitored; If this breaks in production, someone should find out before users report it. Look for swallowed errors or fallbacks that hide breakage.
 
-Generate a risk score for merging this PR on scale of low - medium - high.
+Generate a risk score for merging this PR on a scale of low - medium - high.
 
 Verdicts:
 
