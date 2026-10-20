@@ -1,6 +1,11 @@
 ---
 name: "merge-risk"
 description: "Use when assessing the risk of merging a PR"
+metadata:
+  credits:
+    skill: pr
+    author: Matt Pocock
+    url: "https://github.com/mattpocock/skills/blob/main/skills/engineering/pr/SKILL.md"
 ---
 Output format:
 
@@ -46,3 +51,5 @@ Score = Σ(score × weight) / Σ(weights).
 - low: < 1.5
 - medium: 1.5 – < 2.25
 - high: ≥ 2.25
+
+Keep the numerical score and its calculations internal; do not include them in the output. Report only the low/medium/high risk level and the category verdicts and supporting gaps in the format above.
