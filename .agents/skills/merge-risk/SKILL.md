@@ -52,4 +52,4 @@ Score = Σ(score × weight) / Σ(weights).
 - medium: 1.5 – < 2.25
 - high: ≥ 2.25
 
-Keep the numerical score and its calculations internal; do not include them in the output. Report only the low/medium/high risk level and the category verdicts and supporting gaps in the format above.
+Keep the numerical score and its calculations internal; do not include them in the output.
