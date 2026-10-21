@@ -30,6 +30,20 @@ Each skill lives in its own directory under `.agents/skills/`. The only required
 - `spec-driven-implementation` — guides the full spec-first workflow for substantial features.
 - `implement-specs` — implements approved `PRODUCT.md` and `TECH.md` files while keeping specs and code aligned.
 
+#### How this compares to OpenSpec
+
+The spec skills overlap with [OpenSpec](https://github.com/Fission-AI/OpenSpec) in their central goal: make the intended behavior reviewable before an agent implements it. They differ in scope and in how they manage specifications:
+
+| | Common Skills spec workflow | OpenSpec |
+| --- | --- | --- |
+| Scope | A small, composable part of a broader skill library that also covers PRs, CI, research, and other development work | A dedicated spec-driven development framework and CLI |
+| Artifacts | A behavior-focused `PRODUCT.md` and, when needed, an implementation-focused `TECH.md` for each change | Proposals, capability specs, designs, and task lists generated according to a configurable schema |
+| Lifecycle | Keeps the approved change specs beside the implementation and updates them as the implementation evolves | Maintains canonical specs separately from change deltas, then syncs and archives completed changes |
+| Tooling | Plain agent skills installed selectively with the `skills` CLI; there is no separate spec runtime or state manager | Its own CLI and agent commands for initialization, artifact generation, validation, synchronization, and archival |
+| Customization | Compose individual skills and add repository-local companion skills for project-specific behavior | Configure project context and rules or define custom artifact schemas |
+
+Use these spec skills when you want lightweight product/technical documents that compose with the rest of this repository's workflows. Use OpenSpec when you want a dedicated, tool-managed lifecycle for evolving canonical specifications and change deltas. The approaches can coexist, but a project should choose one of them as the source of truth for a given change to avoid maintaining duplicate specs.
+
 ### Development workflow
 
 - `create-pr` — guidance for preparing and opening pull requests.
