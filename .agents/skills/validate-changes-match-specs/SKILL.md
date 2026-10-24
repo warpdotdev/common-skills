@@ -26,7 +26,7 @@ Prefer repository conventions when known. Otherwise:
 - Use `main`, `master`, or `develop` only when that is clearly the repository's base branch.
 - Use `git merge-base` and `git diff --name-only <base>...HEAD` to find files introduced or modified by the branch.
 
-Look for specs introduced or modified by the change, especially under `specs/`.
+Start with specs introduced or modified by the change, especially under `specs/`. For every relevant `specs/<id>/` directory, also read its approved sibling specs, including siblings that the current change did not modify.
 
 Common spec names include:
 
@@ -37,9 +37,9 @@ Common spec names include:
 - `SECURITY.md`
 - `security.md`
 
-Treat any markdown file bundled under a relevant `specs/<issue-number>/` directory as a valid spec candidate. Examples include focused specs such as `MIGRATION.md`, `ROLLBACK.md`, `PRIVACY.md`, `API.md`, or `TESTING.md`.
+Treat a file as authoritative when the available evidence identifies it as an approved source of commitments. Focused supplemental specs may include `MIGRATION.md`, `ROLLBACK.md`, `PRIVACY.md`, `API.md`, or `TESTING.md`. Treat other markdown files in a relevant `specs/<id>/` directory as supporting context. If a document's approval status is unclear, ask before treating its contents as commitments. The id may be a ticket, issue, or feature name.
 
-If no specs were introduced or modified, look for existing specs referenced by the PR description, commit messages, branch name, changed files, or nearby `specs/` directories. If there is still no relevant spec, stop and report that there is no spec to validate against.
+Also look for existing specs referenced by the PR description, commit messages, branch name, changed files, or nearby `specs/` directories. If there is still no relevant spec, stop and report that there is no spec to validate against.
 
 ## Context gathering
 
@@ -81,13 +81,12 @@ Use the same `ask_user_question` flow for these inconsistencies. For review-comm
 - Append a follow-up comment explaining why the implementation is being left as-is.
 - Explain this inconsistency before deciding.
 - Acknowledge without changes.
-- `Other...`
 
 If the user chooses to append a follow-up comment, draft the comment for approval before posting it. Do not post GitHub comments without explicit approval. Prefix agent-authored follow-up comments with `[Warp Agent]`.
 
 ## Security spec validation
 
-When a security, privacy, compliance, permissions, auth, data-handling, or logging spec is present, validate it especially thoroughly. Treat the security spec as a set of explicit guarantees and threat mitigations, not as high-level guidance.
+When any relevant spec contains security, privacy, compliance, permissions, auth, data-handling, or logging commitments, validate them especially thoroughly. Treat those commitments as explicit guarantees and threat mitigations, not as high-level guidance.
 
 For each security commitment, verify both:
 
@@ -107,7 +106,7 @@ Check implementation details such as:
 - rate limits, abuse cases, replay behavior, and confused-deputy risks
 - test coverage for both allowed and denied cases
 
-If you discover a plausible security gap that is not covered by the security spec, include it as a proposed spec amendment rather than ignoring it because it is missing from the spec. Mark it as `security amendment` in the mismatch report, explain the risk, cite the code or behavior that exposed it, and ask the user whether to update the spec, update the implementation, both, or acknowledge without changes.
+If you discover a plausible security gap that is not covered by the approved specs, include it as a proposed spec amendment rather than ignoring it because it is missing from the specs. Mark it as `security amendment` in the mismatch report, explain the risk, cite the code or behavior that exposed it, and ask the user whether to update the spec, update the implementation, both, or acknowledge without changes.
 
 Do not make speculative security claims. If evidence is incomplete, label the item as a validation gap and describe exactly what would need to be checked.
 
@@ -123,7 +122,6 @@ Call `ask_user_question` with options like:
 
 - `Launch cloud computer-use agents to validate product behavior`
 - `Skip cloud computer-use validation`
-- `Other...`
 
 If the user chooses cloud validation, launch multiple Oz cloud agents with computer use enabled as part of this validation flow. Split the product spec's user-visible behaviors into independent validation assignments, such as one child agent per major flow, user role, platform, or acceptance-criteria group. Each child agent should receive:
 
@@ -141,16 +139,16 @@ If the user skips cloud validation, continue with local/static validation and me
 
 Treat a mismatch as material when any of these are true:
 
-- The implementation omits behavior required by the product spec.
-- The implementation behaves differently from the product spec in a user-visible way.
-- The implementation uses a technical approach that contradicts the tech spec in a way that matters for correctness, maintainability, rollout, or review.
-- The implementation adds meaningful behavior or scope not described by the specs.
-- Security, privacy, permission, or logging behavior differs from the security or product spec.
-- A discovered security gap is not covered by an existing security spec and should be considered as a spec amendment.
+- The implementation omits an approved behavior, design, security, migration, rollout, or validation commitment.
+- The implementation produces user-visible behavior that differs materially from an approved commitment.
+- The implementation contradicts an approved technical or design decision in a way that matters for correctness, maintainability, rollout, or review.
+- The implementation adds meaningful behavior or scope not described by the approved specs.
+- Security, privacy, permission, or logging behavior differs from approved commitments.
+- A discovered security gap is not covered by the approved specs and should be considered as a spec amendment.
 - The implementation does not match the last acknowledged resolution on a PR review comment.
 - Required migrations, rollout steps, feature flags, telemetry, validation, or cleanup are missing.
-- Tests or validation promised by the spec are absent or materially weaker than described.
-- The spec still describes behavior that was deliberately changed during implementation.
+- Tests or validation promised by an approved spec are absent or materially weaker than described.
+- An approved spec still describes behavior that was deliberately changed during implementation.
 
 Do not flag harmless implementation details, naming differences, or local refactors when the implementation preserves the spec's intent.
 
@@ -178,9 +176,6 @@ When mismatches exist, the first `ask_user_question` call must ask how the user 
 
 - `Resolve one-by-one`
 - `Collect all decisions, then apply in a batch`
-- `Other...`
-
-Every `ask_user_question` call in this skill must include an `Other...` option for custom instructions.
 
 ### One-by-one mode
 
@@ -206,7 +201,6 @@ For each mismatch, call `ask_user_question` with options tailored to the specifi
 - Update the spec to match the implementation.
 - Explain this mismatch before deciding.
 - Acknowledge without changes.
-- `Other...`
 
 When the user selects explanation, provide concise context about why the mismatch exists, what would change under each resolution path, and any risk or review implications. Then ask about the same mismatch again.
 
@@ -222,9 +216,8 @@ When the user chooses to update implementation, modify code, tests, docs, migrat
 - Prefer updating implementation when the spec describes required user behavior, security behavior, compatibility, migration, or validation guarantees that the code does not satisfy.
 - If a mismatch affects security or privacy, be explicit about the risk before asking for a resolution.
 - If two mismatch decisions conflict, stop and ask for clarification before editing.
-- Keep product specs user-focused and implementation-light.
-- Keep tech specs grounded in actual architecture and code paths.
-- Keep security specs explicit about threats, boundaries, and mitigations.
+- Evaluate commitments on their substance regardless of which approved spec contains them.
+- Apply each selected spec correction in place, preserving the spec's existing role and style and limiting the edit to the mismatch resolution explicitly selected by the user.
 
 ## Validation after changes
 
@@ -245,7 +238,6 @@ Call `ask_user_question` with options like:
 - `Commit only`
 - `Commit and push to origin`
 - `Do not commit`
-- `Other...`
 
 If the user chooses to commit:
 
