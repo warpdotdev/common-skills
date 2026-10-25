@@ -36,6 +36,7 @@ Each skill lives in its own directory under `.agents/skills/`. The only required
 - `write-pr-description` — writes the PR body: template sections, plain-language prose, and reviewer guidance.
 - `diagnose-ci-failures` — workflow for inspecting GitHub CI failures and producing a fix plan.
 - `fix-errors` — guidance for fixing build, lint, formatting, and test failures.
+- `agent-qa-testing` — validates, runs, and triages agent-qa web/mobile regressions with advanced memidex memory and self-improvement evidence.
 - `resolve-merge-conflicts` — workflow and helper script for resolving git conflicts with compact context.
 - `review-pr` — produces structured PR review feedback from local diff artifacts.
 - `merge-risk` — asses the risk of merging a PR from low to high.
