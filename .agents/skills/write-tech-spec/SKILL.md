@@ -60,6 +60,11 @@ Optional sections — include only when they add signal. Omit the heading entire
 
 - **End-to-end flow** — Include only when tracing the path through the system tells you something the Proposed changes list doesn't.
 - **Diagram** — Include a Mermaid diagram only when a visual will explain the design faster than prose (data flow, state transitions, sequence across layers). Prefer one or two focused diagrams over decorative ones.
+- **API usage examples** — Include when the spec introduces or modifies a public API. Provide at least one end-to-end example for each major operation, covering:
+  - A raw HTTP example (method, path, headers, request body, and an annotated response) that a caller can use directly without any SDK.
+  - SDK examples for any officially supported SDKs (e.g. Python, TypeScript). Match the SDK version and configuration documented elsewhere in the specs or codebase.
+  - At least one composition example showing how this API interacts with related APIs in the same set — for instance, a sequence that creates a resource with one endpoint and then uses it in another, or a workflow that chains multiple calls.
+  Keep examples minimal but realistic: use plausible values, omit boilerplate that obscures the key point, and annotate any non-obvious fields. If an OpenAPI spec or schema exists, examples should match it exactly.
 - **Risks and mitigations** — Include when there are real failure modes, regressions, migration concerns, or rollout hazards worth calling out.
 - **Follow-ups** — Include when there is deferred cleanup or future work worth naming.
 
