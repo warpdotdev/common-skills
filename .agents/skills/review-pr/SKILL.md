@@ -27,6 +27,8 @@ Review the current pull request and write the output to `review.json`.
 - If a concern involves untouched code, mention it in top-level `body` instead of an inline comment.
 - Do not suggest adding test cases that only vary constructor inputs or struct fields when the existing test already covers the meaningful behavior. Only suggest new tests when they exercise a distinct code path or edge case.
 - When a PR is clearly a V0 or initial implementation, frame robustness suggestions (timeouts, retries, lifecycle management) as optional future work rather than blocking concerns, unless they risk correctness, security, or data loss.
+- Before claiming code is broken based on language, runtime, or database semantics (for example, what a SQL function, type, or built-in permits), confirm the behavior. A confident `CRITICAL`/`IMPORTANT` comment whose proposed fix is itself wrong is worse than no comment. When you are unsure, lower the severity and describe the risk instead of prescribing a concrete fix.
+- Keep your comments mutually consistent within a single review. Do not propose a change in one comment that contradicts another comment in the same review (for example, telling the author to remove a construct in one place and to add it back in another).
 
 ## Repository-specific guidance
 
