@@ -2,9 +2,11 @@
 These scripts help consuming repositories install, remove, and verify shared agent skills from `warpdotdev/common-skills`.
 ## Files
 - `resolve_common_skills`: resolves and executes scripts from this directory, a local override directory, or raw GitHub.
-- `install_common_skills`: installs or updates common skills, then verifies the installed contents.
-- `update_common_skills_lock`: regenerates an existing common-skills lockfile without installing skills.
-- `remove_common_skills`: removes installed common skills from a selected target.
+- `install_common_skills`: installs or updates skills from a lockfile, then verifies the installed contents. Parametrized by `--source`/`--lock-file`/`--label` so it can drive any skill set.
+- `install_warp_skills`: thin best-effort wrapper over `install_common_skills` for the internal `warpdotdev/warp-skills` set (`warp-skills-lock.json`).
+- `update_common_skills_lock`: regenerates an existing skills lockfile without installing skills; accepts `--source`/`--lock-file` to target any skills source (e.g. `warp-skills-lock.json` from `warpdotdev/warp-skills`).
+- `remove_common_skills`: removes installed skills listed in a lockfile from a selected target (`--lock-file`/`--label`).
+- `remove_warp_skills`: thin wrapper over `remove_common_skills` for the warp-skills set.
 ## Quick start
 Install common skills into the current checkout:
 ```sh
@@ -89,19 +91,33 @@ The script supports:
 - `--force`: install even if already up to date.
 - `--quiet`: suppress no-op output.
 - `--verify-only`: verify installed skills match `skills-lock.json` without installing.
+- `--source <owner/repo>`: skills source repository (default: `warpdotdev/common-skills`).
+- `--lock-file <name>`: lockfile name within the repo (default: `skills-lock.json`).
+- `--label <name>`: label used for the stamp file and messages (default: `common`).
+- `--best-effort`: on any failure or a missing lockfile, print a short notice and exit 0 (used for the optional internal warp-skills set).
 Successful install and skip paths verify that exactly one install target contains the locked common skills and that each installed skill matches `skills-lock.json`.
 Project installs add local Git exclude entries for only the locked common-skill directories so unrelated project skills in `.agents/skills` remain visible to Git.
 Global installs are shared across client repositories. A second repo pinned to the same lock verifies and succeeds without unnecessarily reinstalling; a repo pinned to a different lock fails with a version-mismatch error instead of overwriting the shared global install.
+## Internal warp-skills
+`install_warp_skills` and `remove_warp_skills` are thin wrappers that run `install_common_skills`/`remove_common_skills` against the internal `warpdotdev/warp-skills` set pinned in the consumer's `warp-skills-lock.json`. The install wrapper passes `--source warpdotdev/warp-skills --lock-file warp-skills-lock.json --label warp --best-effort` and installs into the same target as common skills (project unless `WARP_COMMON_SKILLS_INSTALL_TARGET=global`).
+This step is optional and never required for external contributors: it is best-effort, so a missing `warp-skills-lock.json` or no access to `warpdotdev/warp-skills` results in a short notice and exit 0 without failing the caller. Skip it with `--skip-warp-skills` or `WARP_SKIP_WARP_SKILLS_INSTALL=1`.
+Consumers invoke it through the same resolver as common skills:
+```sh
+./script/resolve_common_skills install_warp_skills -- --repo-root "${REPO_ROOT}" --if-needed
+```
+warp-skills must not reuse common-skill names. The project-vs-global exclusivity check applies to every set: if a locked skill is found in both `.agents/skills` and `~/.agents/skills`, the install fails instead of silently placing the same name in two locations. Since warp-skills and common skills use distinct names, this check also surfaces any accidental naming collision between the two sets.
 ## Update lock script
-`update_common_skills_lock` non-interactively regenerates an existing `skills-lock.json` from the default branch of `warpdotdev/common-skills` without installing skills into the target repository.
+`update_common_skills_lock` non-interactively regenerates an existing skills lockfile from the default branch of a skills source repo without installing skills into the target repository. By default it regenerates `skills-lock.json` from `warpdotdev/common-skills`; pass `--source <owner/repo>` and `--lock-file <name>` to regenerate another lock (e.g. `--source warpdotdev/warp-skills --lock-file warp-skills-lock.json`).
 It generates a candidate in a temporary Git repository, then copies back only a changed `skills-lock.json`. Generator failures and missing candidate output fail the command instead of retaining the existing lock.
 Run it from a consuming repository:
 ```sh
 /path/to/common-skills/scripts/update_common_skills_lock --repo-root /path/to/consumer
+# or, for the warp-skills lock:
+/path/to/common-skills/scripts/update_common_skills_lock --repo-root /path/to/consumer --source warpdotdev/warp-skills --lock-file warp-skills-lock.json
 ```
 The downstream lockfile update workflow uses this command before opening lockfile-only pull requests.
 ## Downstream lockfile workflow
-`.github/workflows/update-downstream-skill-locks.yml` runs after every push to `main` and opens lockfile-only pull requests against `warpdotdev/warp` and `warpdotdev/warp-server` when their locks change.
+`.github/workflows/update-downstream-skill-locks.yml` runs after every push to `main`. A single parametrized matrixed job refreshes both `skills-lock.json` (from `warpdotdev/common-skills`) and `warp-skills-lock.json` (from `warpdotdev/warp-skills`) in `warpdotdev/warp` and `warpdotdev/warp-server`, opening a lockfile-only pull request for each lock that changes.
 Each pull request requests the author of the originating common-skills pull request when possible and enables squash auto-merge. Direct pushes and authors who cannot review a target repository do not prevent pull request creation.
 The workflow requires a dedicated GitHub App installed on both downstream repositories with contents and pull-request write access. Configure its App ID as the `COMMON_SKILLS_SYNC_APP_ID` Actions variable and its private key as the `COMMON_SKILLS_SYNC_APP_PRIVATE_KEY` Actions secret in `common-skills`.
 ## Remove script
@@ -126,7 +142,7 @@ Verification fails if:
 - `WARP_COMMON_SKILLS_TARGET_REPO_ROOT=/path/to/repo`: repository containing `skills-lock.json` and project-local `.agents/skills`.
 - `WARP_COMMON_SKILLS_REF=<git-ref>`: use a specific `warpdotdev/common-skills` branch, tag, or commit when creating a missing lock or checking interactively for lock updates.
 ## Lock hash stamps
-After a successful install, `install_common_skills` writes a stamp with the current `skills-lock.json` hash.
-- Project installs use git path `warp/common-skills-lock.hash`, or `.agents/skills/.common-skills-lock.hash` when git metadata is unavailable.
-- Global installs use `~/.agents/warp/common-skills-lock.hash`.
+After a successful install, `install_common_skills` writes a stamp with the current lockfile hash. The stamp filename is derived from `--label` (default `common`) so different skill sets do not collide (for example, `warp` uses `warp-skills-lock.hash`).
+- Project installs use git path `warp/<label>-skills-lock.hash`, or `.agents/skills/.<label>-skills-lock.hash` when git metadata is unavailable.
+- Global installs use `~/.agents/warp/<label>-skills-lock.hash`.
 The stamp lets `--if-needed` avoid reinstalling when the lock file and installed skills are already current.
