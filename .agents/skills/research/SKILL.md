@@ -41,6 +41,8 @@ The cost of a subagent is real (latency and tokens), so the test is always: does
 
 Always spawn research subagents as **local** agents, never remote — including when the parent is a factory or cloud agent.
 
+These dispatch instructions are for the caller delegating research. A helper whose brief prohibits further delegation performs the lookup directly and returns its findings to that caller.
+
 Pick the model for the search task, not your own. Research subagents should search and distill, not analyze: use `gpt-6-luna-medium` for simple search, and `gpt-6-luna-xhigh` for more involved requests (for example, tracing data flow through call sites).
 
 ### Single vs. parallel
