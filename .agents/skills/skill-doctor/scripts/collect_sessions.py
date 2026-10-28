@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""Collect local Claude Code, Codex, Warp, Pi, Grok Build, and ZCode sessions and skills for scoring.
+"""Collect local Claude Code, Codex, Warp, Pi, Grok Build, ZCode, Hermes, and Antigravity sessions and skills for scoring.
 
 Scans Claude Code project history, Codex rollout files, Warp's local
 conversation databases, Pi agent session JSONL, Grok Build chat history,
-and/or ZCode model-io rollouts, discovers installed skills, detects which
-sessions used which skills, and emits:
+ZCode model-io rollouts, and Antigravity CLI/app JSONL exports. Discovers
+installed skills, detects which sessions used which skills, and emits:
 
   <out>/inventory.json        - skills, per-session stats, sampling decisions
   <out>/transcripts/<id>.md   - condensed transcripts for sampled sessions
@@ -23,7 +23,7 @@ import sys
 from collections import deque
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 from warp_decoder import ProtobufDecodeError, decode_task
 
 MAX_WARP_CONVERSATION_BYTES = 32 * 1024 * 1024
@@ -42,7 +42,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--harness",
-        choices=("auto", "all", "claude", "codex", "warp", "pi", "grok", "zcode", "hermes"),
+        choices=("auto", "all", "claude", "codex", "warp", "pi", "grok", "zcode", "hermes", "antigravity", "agy"),
         default="auto",
         help="session source (default: auto; scans every locally available source)",
     )
@@ -52,6 +52,11 @@ def parse_args():
         help="Claude Code config directory (default: CLAUDE_CONFIG_DIR or ~/.claude)",
     )
     p.add_argument("--codex-home", default=os.environ.get("CODEX_HOME", "~/.codex"))
+    p.add_argument(
+        "--antigravity-home", "--gemini-home",
+        default=os.environ.get("GEMINI_HOME", "~/.gemini"),
+        help="Antigravity data home containing channel brain directories (default: GEMINI_HOME or ~/.gemini)",
+    )
     p.add_argument(
         "--pi-home",
         default="~/.pi/agent",
@@ -136,7 +141,7 @@ def resolve_repos(repo_args):
 
 def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool,
                     pi_home: Path = None, grok_home: Path = None, zcode_home: Path = None,
-                    hermes_home: Path = None):
+                    hermes_home: Path = None, antigravity_home: Path = None):
     if isinstance(repos, Path):
         repos = [repos]
     roots = []
@@ -145,6 +150,7 @@ def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool,
             repo / ".agents" / "skills",
             repo / ".claude" / "skills",
             repo / ".codex" / "skills",
+            repo / ".gemini" / "config" / "skills",
         ))
     if include_global:
         roots += [
@@ -152,6 +158,8 @@ def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool,
             Path.home() / ".agents" / "skills",
             Path.home() / ".claude" / "skills",
         ]
+        if antigravity_home is not None:
+            roots.append(Path(antigravity_home) / "config" / "skills")
         for home in (pi_home, grok_home, zcode_home, hermes_home):
             if home is not None:
                 roots.append(Path(home) / "skills")
@@ -220,6 +228,197 @@ def find_claude_session_files(claude_home: Path, cutoff: datetime, include_subag
             files.append((mtime, path))
     files.sort(key=lambda item: item[0], reverse=True)
     return files
+
+
+def antigravity_brains(home: Path):
+    """Only inspect plaintext exports, not proprietary conversation databases."""
+    roots = [home / "brain"]
+    roots.extend(channel / "brain" for channel in sorted(home.glob("antigravity*")))
+    return [root for root in roots if root.is_dir()]
+
+
+def find_antigravity_session_files(home: Path, cutoff: datetime, include_subagents: bool = False):
+    files = []
+    seen = set()
+    for brain in antigravity_brains(home):
+        # Child conversations are siblings of their parents in newer app builds.
+        children = {p.stem for p in brain.glob("*/.system_generated/subagents/*.json")}
+        for path in brain.glob("*/.system_generated/logs/transcript.jsonl"):
+            if not include_subagents and path.parents[2].name in children:
+                continue
+            try:
+                resolved = path.resolve()
+                mtime = datetime.fromtimestamp(path.stat().st_mtime, tz=timezone.utc)
+            except OSError:
+                continue
+            if resolved not in seen and mtime >= cutoff:
+                seen.add(resolved)
+                files.append((mtime, path))
+    files.sort(key=lambda item: item[0], reverse=True)
+    return files
+
+
+def decode_antigravity_args(args):
+    """Exports encode each argument value as JSON, including quoted paths."""
+    if isinstance(args, str):
+        try:
+            args = json.loads(args)
+        except ValueError:
+            return args
+    if not isinstance(args, dict):
+        return args
+    decoded = {}
+    for key, value in args.items():
+        if isinstance(value, str):
+            try:
+                value = json.loads(value)
+            except ValueError:
+                pass
+        decoded[key] = value
+    return decoded
+
+
+def antigravity_workspace(uris):
+    if isinstance(uris, str):
+        uris = [uris]
+    if not isinstance(uris, list):
+        return None
+    for uri in uris:
+        if not isinstance(uri, str) or "\0" in uri:
+            continue
+        try:
+            parsed = urlparse(uri)
+        except ValueError:
+            continue
+        if parsed.scheme == "file" and parsed.netloc in ("", "localhost"):
+            path = unquote(parsed.path)
+            if "\0" not in path and Path(path).is_absolute():
+                return path
+        if not parsed.scheme and Path(uri).is_absolute():
+            return uri
+    return None
+
+
+def antigravity_metadata(path: Path):
+    session = path.parents[2]
+    brain = session.parent
+    meta = {"id": session.name, "cwd": None, "originator": "antigravity",
+            "channel": brain.parent.name}
+    for reference in brain.glob(f"*/.system_generated/subagents/{session.name}.json"):
+        try:
+            data = json.loads(reference.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(data, dict):
+            meta["thread_source"] = "subagent"
+            meta["cwd"] = antigravity_workspace(data.get("workspaceUris"))
+            break
+    cache = brain.parent / "cache" / "conversation_metadata.json"
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+        summary = data.get("conversations", {}).get(session.name, {}).get("summary", {})
+        if isinstance(summary, dict):
+            meta["cwd"] = meta["cwd"] or antigravity_workspace(summary.get("WorkspaceURIs"))
+    except (OSError, ValueError, AttributeError):
+        pass
+    return meta
+
+
+def parse_antigravity_session(path: Path, skill_names, include_subagents: bool = False):
+    """Normalize CLI/app exports; do not count injected context as user input."""
+    meta = antigravity_metadata(path)
+    if meta.get("thread_source") == "subagent" and not include_subagents:
+        return None
+    try:
+        records = iter_jsonl_records(path)
+    except OSError:
+        return None
+    stats = {"user_turns": 0, "assistant_turns": 0, "tool_calls": 0,
+             "repeated_tool_calls": 0, "error_outputs": 0}
+    entries = TranscriptBuffer()
+    seen_calls = set()
+    skills_used = set()
+    first_ts = last_ts = inferred_cwd = None
+    has_code_edits = False
+    edit_tools = GENERIC_EDIT_TOOLS | {"write_to_file", "replace_file_content", "apply_diff"}
+    context_tags = ("identity", "user_information", "mcp_servers", "skills", "subagents",
+                    "messaging", "conversation_transcript", "artifacts", "slash_commands",
+                    "terminal_sandbox", "planning_mode", "guidelines", "communication_style")
+    for step in records:
+        if not isinstance(step, dict):
+            continue
+        ts = step.get("created_at")
+        if isinstance(ts, str) and ts:
+            first_ts = first_ts or ts
+            last_ts = ts
+        kind = step.get("type")
+        content = step.get("content")
+        content = content if isinstance(content, str) else ""
+        if kind == "USER_INPUT":
+            # Workspace context is metadata, not a user request or skill-use evidence.
+            workspace = re.search(r"\[URI\] -> \[CorpusName\]:\s*\n([^\r\n]+)", content)
+            if workspace and not meta["cwd"]:
+                meta["cwd"] = antigravity_workspace(workspace.group(1).split(" -> ", 1)[0].strip())
+            request = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", content, re.DOTALL)
+            if request:
+                text = request.group(1).strip()
+            elif looks_injected(content) or any(content.lstrip().startswith(f"<{tag}") for tag in context_tags):
+                continue
+            else:
+                text = content.strip()
+            if text:
+                stats["user_turns"] += 1
+                entries.append(("user", truncate(text, MAX_MSG_CHARS)))
+        elif kind == "PLANNER_RESPONSE":
+            calls = step.get("tool_calls")
+            calls = calls if isinstance(calls, list) else []
+            if content.strip() or calls:
+                stats["assistant_turns"] += 1
+            if content.strip():
+                entries.append(("assistant", truncate(content, MAX_MSG_CHARS)))
+            for call in calls:
+                if not isinstance(call, dict):
+                    continue
+                name = str(call.get("name") or "unknown")
+                args = decode_antigravity_args(call.get("args", {}))
+                args_text = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False, sort_keys=True)
+                stats["tool_calls"] += 1
+                key = hashlib.sha1((name + args_text).encode()).hexdigest()
+                if key in seen_calls:
+                    stats["repeated_tool_calls"] += 1
+                seen_calls.add(key)
+                skills_used.update(detect_skill_candidates(args_text))
+                has_code_edits = has_code_edits or name in edit_tools
+                if isinstance(args, dict):
+                    cwd = antigravity_workspace(args.get("Cwd") or args.get("cwd"))
+                    if isinstance(cwd, str) and Path(cwd).is_absolute() and not meta["cwd"]:
+                        meta["cwd"] = cwd
+                    target = antigravity_workspace(
+                        args.get("Path") or args.get("AbsolutePath") or args.get("TargetFile"))
+                    if (inferred_cwd is None and isinstance(target, str)
+                            and Path(target).is_absolute()
+                            and not any(marker in target.replace("\\", "/") for marker in (
+                                "/.agents/skills/", "/.gemini/config/skills/",
+                                "/.claude/skills/", "/.codex/skills/"))
+                            and Path(target).name != "SKILL.md"):
+                        # A global skill read does not identify the session workspace.
+                        inferred_cwd = str(Path(target).parent)
+                entries.append((f"tool:{name}", truncate(args_text, MAX_TOOL_CHARS)))
+        elif kind not in ("SYSTEM_MESSAGE", "CHECKPOINT", "ERROR_MESSAGE") and content:
+            # Older exports use tool-specific result types (RUN_COMMAND, VIEW_FILE, ...).
+            if (step.get("status") == "ERROR"
+                    or re.search(r"Command exited with code (?!0\b)-?\d+", content)
+                    or any(hint in content[:2000].lower() for hint in ("error", "failed", "traceback"))):
+                stats["error_outputs"] += 1
+            entries.append(("output", truncate(content, MAX_TOOL_CHARS)))
+        elif kind == "ERROR_MESSAGE":
+            stats["error_outputs"] += 1
+            if content:
+                entries.append(("output", truncate(content, MAX_TOOL_CHARS)))
+    meta["cwd"] = meta["cwd"] or inferred_cwd
+    meta["started_at"] = first_ts
+    stats.update(first_ts=first_ts, last_ts=last_ts, has_code_edits=has_code_edits)
+    return meta, stats, entries.finish(), sorted(skills_used)
 
 
 def truncate(text: str, limit: int) -> str:
@@ -1546,6 +1745,7 @@ def main():
         sys.exit(2)
     claude_home = Path(args.claude_home).expanduser()
     codex_home = Path(args.codex_home).expanduser()
+    antigravity_home = Path(args.antigravity_home).expanduser()
     pi_home = Path(args.pi_home).expanduser()
     grok_home = Path(args.grok_home).expanduser()
     zcode_home = Path(args.zcode_home).expanduser()
@@ -1564,6 +1764,7 @@ def main():
         grok_home=grok_home,
         zcode_home=zcode_home,
         hermes_home=hermes_home,
+        antigravity_home=antigravity_home,
     )
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.days)
 
@@ -1642,6 +1843,28 @@ def main():
             })
     elif args.harness == "codex":
         print(f"error: Codex home not found at {codex_home}", file=sys.stderr)
+        sys.exit(1)
+
+    requested_antigravity = args.harness in ("auto", "all", "antigravity", "agy")
+    if requested_antigravity and antigravity_brains(antigravity_home):
+        antigravity_files = find_antigravity_session_files(antigravity_home, cutoff, args.include_subagents)
+        sources["antigravity"] = {"home": str(antigravity_home), "records_in_window": len(antigravity_files)}
+        scanned_count += len(antigravity_files)
+        for mtime, path in antigravity_files:
+            parsed = parse_antigravity_session(path, skills.keys(), args.include_subagents)
+            if parsed is None:
+                continue
+            meta, stats, entries, skills_used = parsed
+            if not args.all_conversations and not session_matches_repos(meta.get("cwd"), repos):
+                continue
+            in_scope_count += 1
+            if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
+                continue
+            sessions.append({"harness": "antigravity", "meta": meta, "stats": stats,
+                             "skills_used": skills_used, "file": str(path),
+                             "modified_at": mtime.isoformat(), "_entries": entries})
+    elif args.harness in ("antigravity", "agy"):
+        print(f"error: Antigravity brain directories not found under {antigravity_home}", file=sys.stderr)
         sys.exit(1)
 
     requested_warp = args.harness in ("auto", "all", "warp")
@@ -1824,7 +2047,7 @@ def main():
 
     if not sources:
         print(
-            "error: no supported session source found (Claude Code, Codex, Warp, Pi, Grok, ZCode, or Hermes)",
+            "error: no supported session source found (Claude Code, Codex, Warp, Pi, Grok, ZCode, Hermes, or Antigravity)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1839,6 +2062,7 @@ def main():
             grok_home=grok_home,
             zcode_home=zcode_home,
             hermes_home=hermes_home,
+            antigravity_home=antigravity_home,
         )
     installed_skill_names = set(skills)
     for session in sessions:
@@ -1904,6 +2128,7 @@ def main():
         "sources": sources,
         "claude_home": str(claude_home) if "claude" in sources else None,
         "codex_home": str(codex_home) if "codex" in sources else None,
+        "antigravity_home": str(antigravity_home) if "antigravity" in sources else None,
         "pi_home": str(pi_home) if "pi" in sources else None,
         "grok_home": str(grok_home) if "grok" in sources else None,
         "zcode_home": str(zcode_home) if "zcode" in sources else None,
