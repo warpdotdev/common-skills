@@ -237,14 +237,24 @@ def antigravity_brains(home: Path):
     return [root for root in roots if root.is_dir()]
 
 
-def find_antigravity_session_files(home: Path, cutoff: datetime, include_subagents: bool = False):
+def find_antigravity_session_files(
+    home: Path,
+    cutoff: datetime,
+    include_subagents: bool = False,
+    metadata_by_brain=None,
+):
+    if metadata_by_brain is None:
+        metadata_by_brain = {}
     files = []
     seen = set()
     for brain in antigravity_brains(home):
-        # Child conversations are siblings of their parents in newer app builds.
-        children = {p.stem for p in brain.glob("*/.system_generated/subagents/*.json")}
+        if brain not in metadata_by_brain:
+            metadata_by_brain[brain] = load_antigravity_metadata(brain)
+        metadata = metadata_by_brain[brain]
         for path in brain.glob("*/.system_generated/logs/transcript.jsonl"):
-            if not include_subagents and path.parents[2].name in children:
+            session_id = path.parents[2].name
+            is_child = metadata.get(session_id, {}).get("thread_source") == "subagent"
+            if is_child and not include_subagents:
                 continue
             try:
                 resolved = path.resolve()
@@ -299,51 +309,119 @@ def antigravity_workspace(uris):
     return None
 
 
-def antigravity_metadata(path: Path):
-    session = path.parents[2]
-    brain = session.parent
-    meta = {"id": session.name, "cwd": None, "originator": "antigravity",
-            "channel": brain.parent.name}
-    for reference in brain.glob(f"*/.system_generated/subagents/{session.name}.json"):
+def load_antigravity_metadata(brain: Path):
+    """Index workspaces and child references once for one channel scan."""
+    metadata = {}
+    cache = brain.parent / "cache" / "conversation_metadata.json"
+    try:
+        data = json.loads(cache.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = {}
+    conversations = data.get("conversations", {}) if isinstance(data, dict) else {}
+    if isinstance(conversations, dict):
+        for session_id, conversation in conversations.items():
+            if not isinstance(conversation, dict):
+                continue
+            summary = conversation.get("summary")
+            if isinstance(summary, dict):
+                metadata[session_id] = {
+                    "cwd": antigravity_workspace(summary.get("WorkspaceURIs")),
+                }
+
+    # Newer app builds export child conversations beside their parents.
+    for reference in brain.glob("*/.system_generated/subagents/*.json"):
+        child = metadata.setdefault(reference.stem, {})
+        child["thread_source"] = "subagent"
         try:
             data = json.loads(reference.read_text(encoding="utf-8"))
         except (OSError, ValueError):
             continue
         if isinstance(data, dict):
-            meta["thread_source"] = "subagent"
-            meta["cwd"] = antigravity_workspace(data.get("workspaceUris"))
-            break
-    cache = brain.parent / "cache" / "conversation_metadata.json"
-    try:
-        data = json.loads(cache.read_text(encoding="utf-8"))
-        summary = data.get("conversations", {}).get(session.name, {}).get("summary", {})
-        if isinstance(summary, dict):
-            meta["cwd"] = meta["cwd"] or antigravity_workspace(summary.get("WorkspaceURIs"))
-    except (OSError, ValueError, AttributeError):
-        pass
+            workspace = antigravity_workspace(data.get("workspaceUris"))
+            child["cwd"] = workspace or child.get("cwd")
+    return metadata
+
+
+def antigravity_metadata(path: Path, metadata=None):
+    session = path.parents[2]
+    brain = session.parent
+    if metadata is None:
+        metadata = load_antigravity_metadata(brain)
+    meta = {
+        "id": session.name,
+        "cwd": None,
+        "originator": "antigravity",
+        "channel": brain.parent.name,
+    }
+    meta.update(metadata.get(session.name, {}))
     return meta
 
 
-def parse_antigravity_session(path: Path, skill_names, include_subagents: bool = False):
+def antigravity_file_workspace(args):
+    """Infer a fallback directory from a file tool, excluding skill resources."""
+    target = antigravity_workspace(
+        args.get("Path") or args.get("AbsolutePath") or args.get("TargetFile")
+    )
+    if target is None or Path(target).name == "SKILL.md":
+        return None
+    skill_roots = (
+        "/.agents/skills/",
+        "/.gemini/config/skills/",
+        "/.claude/skills/",
+        "/.codex/skills/",
+    )
+    if any(marker in target.replace("\\", "/") for marker in skill_roots):
+        return None
+    return str(Path(target).parent)
+
+
+def parse_antigravity_session(
+    path: Path,
+    skill_names,
+    include_subagents: bool = False,
+    metadata=None,
+):
     """Normalize CLI/app exports; do not count injected context as user input."""
-    meta = antigravity_metadata(path)
+    meta = antigravity_metadata(path, metadata)
     if meta.get("thread_source") == "subagent" and not include_subagents:
         return None
     try:
         records = iter_jsonl_records(path)
     except OSError:
         return None
-    stats = {"user_turns": 0, "assistant_turns": 0, "tool_calls": 0,
-             "repeated_tool_calls": 0, "error_outputs": 0}
+    stats = {
+        "user_turns": 0,
+        "assistant_turns": 0,
+        "tool_calls": 0,
+        "repeated_tool_calls": 0,
+        "error_outputs": 0,
+    }
     entries = TranscriptBuffer()
     seen_calls = set()
     skills_used = set()
-    first_ts = last_ts = inferred_cwd = None
+    first_ts = last_ts = None
+    inferred_cwd = None
     has_code_edits = False
-    edit_tools = GENERIC_EDIT_TOOLS | {"write_to_file", "replace_file_content", "apply_diff"}
-    context_tags = ("identity", "user_information", "mcp_servers", "skills", "subagents",
-                    "messaging", "conversation_transcript", "artifacts", "slash_commands",
-                    "terminal_sandbox", "planning_mode", "guidelines", "communication_style")
+    edit_tools = GENERIC_EDIT_TOOLS | {
+        "write_to_file",
+        "replace_file_content",
+        "apply_diff",
+    }
+    context_tags = (
+        "identity",
+        "user_information",
+        "mcp_servers",
+        "skills",
+        "subagents",
+        "messaging",
+        "conversation_transcript",
+        "artifacts",
+        "slash_commands",
+        "terminal_sandbox",
+        "planning_mode",
+        "guidelines",
+        "communication_style",
+    )
     for step in records:
         if not isinstance(step, dict):
             continue
@@ -358,11 +436,14 @@ def parse_antigravity_session(path: Path, skill_names, include_subagents: bool =
             # Workspace context is metadata, not a user request or skill-use evidence.
             workspace = re.search(r"\[URI\] -> \[CorpusName\]:\s*\n([^\r\n]+)", content)
             if workspace and not meta["cwd"]:
-                meta["cwd"] = antigravity_workspace(workspace.group(1).split(" -> ", 1)[0].strip())
+                workspace_uri = workspace.group(1).split(" -> ", 1)[0].strip()
+                meta["cwd"] = antigravity_workspace(workspace_uri)
             request = re.search(r"<USER_REQUEST>\s*(.*?)\s*</USER_REQUEST>", content, re.DOTALL)
             if request:
                 text = request.group(1).strip()
-            elif looks_injected(content) or any(content.lstrip().startswith(f"<{tag}") for tag in context_tags):
+            elif looks_injected(content) or any(
+                content.lstrip().startswith(f"<{tag}") for tag in context_tags
+            ):
                 continue
             else:
                 text = content.strip()
@@ -381,7 +462,10 @@ def parse_antigravity_session(path: Path, skill_names, include_subagents: bool =
                     continue
                 name = str(call.get("name") or "unknown")
                 args = decode_antigravity_args(call.get("args", {}))
-                args_text = args if isinstance(args, str) else json.dumps(args, ensure_ascii=False, sort_keys=True)
+                if isinstance(args, str):
+                    args_text = args
+                else:
+                    args_text = json.dumps(args, ensure_ascii=False, sort_keys=True)
                 stats["tool_calls"] += 1
                 key = hashlib.sha1((name + args_text).encode()).hexdigest()
                 if key in seen_calls:
@@ -391,24 +475,17 @@ def parse_antigravity_session(path: Path, skill_names, include_subagents: bool =
                 has_code_edits = has_code_edits or name in edit_tools
                 if isinstance(args, dict):
                     cwd = antigravity_workspace(args.get("Cwd") or args.get("cwd"))
-                    if isinstance(cwd, str) and Path(cwd).is_absolute() and not meta["cwd"]:
-                        meta["cwd"] = cwd
-                    target = antigravity_workspace(
-                        args.get("Path") or args.get("AbsolutePath") or args.get("TargetFile"))
-                    if (inferred_cwd is None and isinstance(target, str)
-                            and Path(target).is_absolute()
-                            and not any(marker in target.replace("\\", "/") for marker in (
-                                "/.agents/skills/", "/.gemini/config/skills/",
-                                "/.claude/skills/", "/.codex/skills/"))
-                            and Path(target).name != "SKILL.md"):
-                        # A global skill read does not identify the session workspace.
-                        inferred_cwd = str(Path(target).parent)
+                    meta["cwd"] = meta["cwd"] or cwd
+                    if inferred_cwd is None:
+                        inferred_cwd = antigravity_file_workspace(args)
                 entries.append((f"tool:{name}", truncate(args_text, MAX_TOOL_CHARS)))
         elif kind not in ("SYSTEM_MESSAGE", "CHECKPOINT", "ERROR_MESSAGE") and content:
             # Older exports use tool-specific result types (RUN_COMMAND, VIEW_FILE, ...).
-            if (step.get("status") == "ERROR"
-                    or re.search(r"Command exited with code (?!0\b)-?\d+", content)
-                    or any(hint in content[:2000].lower() for hint in ("error", "failed", "traceback"))):
+            failed_exit = re.search(r"Command exited with code (?!0\b)-?\d+", content)
+            error_text = any(
+                hint in content[:2000].lower() for hint in ("error", "failed", "traceback")
+            )
+            if step.get("status") == "ERROR" or failed_exit or error_text:
                 stats["error_outputs"] += 1
             entries.append(("output", truncate(content, MAX_TOOL_CHARS)))
         elif kind == "ERROR_MESSAGE":
@@ -417,7 +494,9 @@ def parse_antigravity_session(path: Path, skill_names, include_subagents: bool =
                 entries.append(("output", truncate(content, MAX_TOOL_CHARS)))
     meta["cwd"] = meta["cwd"] or inferred_cwd
     meta["started_at"] = first_ts
-    stats.update(first_ts=first_ts, last_ts=last_ts, has_code_edits=has_code_edits)
+    stats["first_ts"] = first_ts
+    stats["last_ts"] = last_ts
+    stats["has_code_edits"] = has_code_edits
     return meta, stats, entries.finish(), sorted(skills_used)
 
 
@@ -1847,24 +1926,50 @@ def main():
 
     requested_antigravity = args.harness in ("auto", "all", "antigravity", "agy")
     if requested_antigravity and antigravity_brains(antigravity_home):
-        antigravity_files = find_antigravity_session_files(antigravity_home, cutoff, args.include_subagents)
-        sources["antigravity"] = {"home": str(antigravity_home), "records_in_window": len(antigravity_files)}
+        metadata_by_brain = {}
+        antigravity_files = find_antigravity_session_files(
+            antigravity_home,
+            cutoff,
+            args.include_subagents,
+            metadata_by_brain=metadata_by_brain,
+        )
+        sources["antigravity"] = {
+            "home": str(antigravity_home),
+            "records_in_window": len(antigravity_files),
+        }
         scanned_count += len(antigravity_files)
         for mtime, path in antigravity_files:
-            parsed = parse_antigravity_session(path, skills.keys(), args.include_subagents)
+            parsed = parse_antigravity_session(
+                path,
+                skills.keys(),
+                args.include_subagents,
+                metadata=metadata_by_brain[path.parents[3]],
+            )
             if parsed is None:
                 continue
             meta, stats, entries, skills_used = parsed
-            if not args.all_conversations and not session_matches_repos(meta.get("cwd"), repos):
+            if not args.all_conversations and not session_matches_repos(
+                meta.get("cwd"),
+                repos,
+            ):
                 continue
             in_scope_count += 1
             if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
                 continue
-            sessions.append({"harness": "antigravity", "meta": meta, "stats": stats,
-                             "skills_used": skills_used, "file": str(path),
-                             "modified_at": mtime.isoformat(), "_entries": entries})
+            sessions.append({
+                "harness": "antigravity",
+                "meta": meta,
+                "stats": stats,
+                "skills_used": skills_used,
+                "file": str(path),
+                "modified_at": mtime.isoformat(),
+                "_entries": entries,
+            })
     elif args.harness in ("antigravity", "agy"):
-        print(f"error: Antigravity brain directories not found under {antigravity_home}", file=sys.stderr)
+        print(
+            f"error: Antigravity brain directories not found under {antigravity_home}",
+            file=sys.stderr,
+        )
         sys.exit(1)
 
     requested_warp = args.harness in ("auto", "all", "warp")
