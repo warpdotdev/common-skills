@@ -5,19 +5,16 @@ description: Writes the body of a pull request - the summary, the repository tem
 
 # write-pr-description
 
-A pull request description has one job: give the reviewer what the diff cannot.
-
-The diff already states what changed. The description states why it changed, what it
-affects, which decisions were made along the way, and where the author wants attention.
-Everything below follows from that. When a rule here conflicts with what a specific
-reviewer needs, serve the reviewer.
+A pull request description gives the reviewer what the diff cannot: why the change is
+needed, what it affects, the decisions behind it, and where to focus attention. When a
+rule here conflicts with a specific reviewer's needs, serve the reviewer.
 
 `create-pr` covers the mechanics of opening the PR. This skill covers what goes in the body.
 
 ## 1. Collect the facts before drafting
 
-Usually you did the work and already know most of this. When you are describing a branch
-you did not write, or a PR you have just been handed, start here.
+Reuse facts you gathered while doing the work. For an unfamiliar branch or PR, start
+with its commits and diff:
 
 ```bash
 # From a checkout of the branch
@@ -184,10 +181,8 @@ opens with a short map of which of its sections you need.
 
 ## 5. Cut
 
-Drafts run long, and the excess is almost never in the thinking. It collects in the parts
-that feel obligatory: the checklist answers, the inventory of tests, the second statement
-of something you already said. Those parts are also the easiest to delete, which makes
-this pass cheap and worth doing every time.
+Cut routine checklist prose, test inventories, and repeated facts that add no reviewer
+context.
 
 Rough anchors for the whole body, before you start cutting:
 
@@ -199,11 +194,11 @@ Rough anchors for the whole body, before you start cutting:
 - A very large or foundational change: around a thousand, with most of the extra spent on
   the reading order and the focus areas.
 
-These are anchors, not limits. Being over one means look harder at the list below; it
-never means cut a decision.
+These are anchors, not limits. If the body is longer, check for the excess below; do not
+cut a decision to meet a word count.
 
-Then take each paragraph and name the decision it helps the reviewer make. If you cannot
-name one, delete it. The usual finds:
+For each paragraph, identify the decision it helps the reviewer make. Delete paragraphs
+that serve none. Common cuts:
 
 - Anything the diff shows at a glance. "The hash-scroll logic was generalized", "the
   field was renamed", one bullet per changed line, a restatement of the lockfile. The
@@ -226,10 +221,8 @@ name one, delete it. The usual finds:
   has a wide blast radius." Write the guide; do not justify it.
 - Commit trailers. `Co-Authored-By` belongs in the commit, not in the PR body.
 
-Keep, even when cutting hard: the motivation, the behavior changes, the decisions and
-their rejected alternatives, the open questions, and the blast radius. These are the
-reason the description exists. When something has to go, cut mechanism before you cut a
-decision.
+Preserve the motivation, behavior changes, decisions and rejected alternatives, open
+questions, and blast radius. Cut mechanism before cutting a decision.
 
 ## 6. Self-check
 
