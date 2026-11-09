@@ -1964,8 +1964,10 @@ def infer_session_repos(sessions):
     repos = []
     seen = set()
     for session in sessions:
-        candidates = [session["meta"].get("cwd")]
-        candidates.extend(session["meta"].get("_cwd_candidates") or [])
+        meta = session["meta"]
+        has_cursor_candidates = "_cwd_candidates" in meta
+        candidates = [meta.get("cwd")]
+        candidates.extend(meta.get("_cwd_candidates") or [])
         session_root = None
         for cwd in candidates:
             if not cwd:
@@ -1979,8 +1981,8 @@ def infer_session_repos(sessions):
                 continue
             seen.add(repo)
             repos.append(repo)
-        if session_root:
-            session["meta"]["cwd"] = session_root
+        if session_root and has_cursor_candidates:
+            meta["cwd"] = session_root
     return repos
 
 

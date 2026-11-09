@@ -23,6 +23,7 @@ from collect_sessions import (
     find_hermes_sessions,
     find_pi_session_files,
     git_root_for_directory,
+    infer_session_repos,
     parse_claude_session,
     parse_codex_session,
     parse_cursor_session,
@@ -55,6 +56,26 @@ def write_jsonl_past_previous_limit(path, first_record, last_records):
 
 
 class ClaudeSessionTests(unittest.TestCase):
+    def test_all_conversations_infers_repo_without_rewriting_non_cursor_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subdirectory = repo / "src" / "nested"
+            subdirectory.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            original_cwd = str(subdirectory)
+            sessions = [{
+                "harness": "claude",
+                "meta": {"cwd": original_cwd},
+            }]
+            git_root_for_directory.cache_clear()
+
+            repos = infer_session_repos(sessions)
+
+            self.assertEqual(repos, [repo.resolve()])
+            self.assertEqual(sessions[0]["meta"]["cwd"], original_cwd)
+            git_root_for_directory.cache_clear()
+
     def test_discovers_skills_and_matches_sessions_across_projects(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
