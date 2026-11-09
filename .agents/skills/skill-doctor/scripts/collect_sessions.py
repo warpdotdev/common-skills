@@ -23,6 +23,7 @@ import subprocess
 import sys
 from collections import deque
 from datetime import datetime, timedelta, timezone
+from functools import lru_cache
 from pathlib import Path
 from urllib.parse import unquote
 from warp_decoder import ProtobufDecodeError, decode_task
@@ -361,8 +362,16 @@ def cursor_cwd_candidates_from_tool_input(value):
     return working_directories, path_directories
 
 
-def git_root_for_directory(value):
-    path = Path(value).expanduser()
+def normalize_cursor_candidate(value):
+    try:
+        return str(Path(value).expanduser().resolve())
+    except OSError:
+        return str(Path(value).expanduser())
+
+
+@lru_cache(maxsize=None)
+def _git_root_for_normalized_directory(normalized_directory):
+    path = Path(normalized_directory)
     if not path.is_dir():
         return None
     try:
@@ -379,15 +388,26 @@ def git_root_for_directory(value):
     return str(Path(result.stdout.strip()).resolve())
 
 
+def git_root_for_directory(value):
+    return _git_root_for_normalized_directory(
+        normalize_cursor_candidate(value)
+    )
+
+
+git_root_for_directory.cache_clear = (
+    _git_root_for_normalized_directory.cache_clear
+)
+git_root_for_directory.cache_info = (
+    _git_root_for_normalized_directory.cache_info
+)
+
+
 def unique_cursor_candidates(*groups):
     candidates = []
     seen = set()
     for group in groups:
         for value in group:
-            try:
-                normalized = str(Path(value).expanduser().resolve())
-            except OSError:
-                normalized = str(Path(value).expanduser())
+            normalized = normalize_cursor_candidate(value)
             if normalized in seen:
                 continue
             seen.add(normalized)
@@ -398,14 +418,6 @@ def unique_cursor_candidates(*groups):
 def select_cursor_cwd(workspace_hint, working_directories, path_directories):
     if workspace_hint:
         return str(Path(workspace_hint).expanduser().resolve())
-    ordered = unique_cursor_candidates(
-        working_directories,
-        path_directories,
-    )
-    for candidate in ordered:
-        git_root = git_root_for_directory(candidate)
-        if git_root:
-            return git_root
     if working_directories:
         return working_directories[0]
     if path_directories:
@@ -858,7 +870,7 @@ def parse_cursor_session(
         or bool(used_tool_names & GENERIC_EDIT_TOOLS)
         or has_code_edit_hint
     )
-    meta["cwd_candidates"] = unique_cursor_candidates(
+    meta["_cwd_candidates"] = unique_cursor_candidates(
         working_directories,
         path_directories,
     )
@@ -1934,8 +1946,18 @@ def session_matches_repos(cwd, repos) -> bool:
 
 def session_meta_matches_repos(meta, repos) -> bool:
     candidates = [meta.get("cwd")]
-    candidates.extend(meta.get("cwd_candidates") or [])
+    candidates.extend(meta.get("_cwd_candidates") or [])
     return any(session_matches_repos(candidate, repos) for candidate in candidates)
+
+
+def matching_repo_for_session_meta(meta, repos):
+    candidates = [meta.get("cwd")]
+    candidates.extend(meta.get("_cwd_candidates") or [])
+    for candidate in candidates:
+        for repo in repos:
+            if session_matches_repo(candidate, repo):
+                return repo.resolve()
+    return None
 
 
 def infer_session_repos(sessions):
@@ -1943,18 +1965,22 @@ def infer_session_repos(sessions):
     seen = set()
     for session in sessions:
         candidates = [session["meta"].get("cwd")]
-        candidates.extend(session["meta"].get("cwd_candidates") or [])
+        candidates.extend(session["meta"].get("_cwd_candidates") or [])
+        session_root = None
         for cwd in candidates:
             if not cwd:
                 continue
             root = git_root_for_directory(cwd)
             if not root:
                 continue
+            session_root = session_root or root
             repo = Path(root)
             if repo in seen:
                 continue
             seen.add(repo)
             repos.append(repo)
+        if session_root:
+            session["meta"]["cwd"] = session_root
     return repos
 
 
@@ -2125,11 +2151,11 @@ def main():
                 if parsed is None:
                     continue
                 meta, stats, entries, skills_used = parsed
-                if not args.all_conversations and not session_meta_matches_repos(
-                    meta,
-                    repos,
-                ):
-                    continue
+                if not args.all_conversations:
+                    matched_repo = matching_repo_for_session_meta(meta, repos)
+                    if matched_repo is None:
+                        continue
+                    meta["cwd"] = str(matched_repo)
                 in_scope_count += 1
                 if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
                     continue
@@ -2348,6 +2374,8 @@ def main():
             zcode_home=zcode_home,
             hermes_home=hermes_home,
         )
+    for session in sessions:
+        session["meta"].pop("_cwd_candidates", None)
     installed_skill_names = set(skills)
     for session in sessions:
         detected = detect_skills_from_entries(

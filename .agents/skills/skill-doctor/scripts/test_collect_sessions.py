@@ -9,6 +9,7 @@ import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from collect_sessions import (
     cursor_project_key,
@@ -21,6 +22,7 @@ from collect_sessions import (
     find_grok_session_files,
     find_hermes_sessions,
     find_pi_session_files,
+    git_root_for_directory,
     parse_claude_session,
     parse_codex_session,
     parse_cursor_session,
@@ -29,6 +31,7 @@ from collect_sessions import (
     parse_pi_session,
     parse_zcode_session,
     resolve_hermes_home,
+    session_meta_matches_repos,
     session_matches_repos,
 )
 
@@ -258,6 +261,73 @@ class ClaudeSessionTests(unittest.TestCase):
 
 
 class CursorSessionTests(unittest.TestCase):
+    def test_git_root_resolution_caches_normalized_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            clear_cache = getattr(
+                git_root_for_directory,
+                "cache_clear",
+                lambda: None,
+            )
+            clear_cache()
+            equivalent_repo = repo / ".." / repo.name
+
+            with mock.patch(
+                "collect_sessions.subprocess.run",
+                wraps=subprocess.run,
+            ) as run:
+                first = git_root_for_directory(repo)
+                second = git_root_for_directory(equivalent_repo)
+
+            self.assertEqual(first, str(repo.resolve()))
+            self.assertEqual(second, first)
+            self.assertEqual(run.call_count, 1)
+            self.assertTrue(callable(
+                getattr(git_root_for_directory, "cache_clear", None)
+            ))
+            git_root_for_directory.cache_clear()
+
+    def test_selected_repo_exclusion_does_not_probe_git_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            selected = root / "selected"
+            excluded = root / "excluded"
+            selected.mkdir()
+            excluded.mkdir()
+            path = root / "excluded-session.jsonl"
+            write_jsonl(path, [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect another repository"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {
+                                "command": "pwd",
+                                "working_directory": str(excluded),
+                            },
+                        }]
+                    },
+                },
+            ])
+
+            with mock.patch("collect_sessions.subprocess.run") as run:
+                parsed = parse_cursor_session(path, set(), False)
+                in_scope = session_meta_matches_repos(
+                    parsed[0],
+                    [selected.resolve()],
+                )
+
+            self.assertFalse(in_scope)
+            run.assert_not_called()
+
     def test_parses_wrapped_query_tools_attached_skills_and_timestamp(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "session-1.jsonl"
@@ -1254,6 +1324,55 @@ class CursorCollectorIntegrationTests(unittest.TestCase):
             rendered = next((out / "transcripts").glob("*.md")).read_text()
             self.assertIn("[user] Use the skill", rendered)
             self.assertIn("skills detected: sample-skill", rendered)
+
+    def test_inventory_omits_internal_cursor_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "sample-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "session-internal"
+                / "session-internal.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect the repository"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {
+                                "command": "git status",
+                                "working_directory": str(repo),
+                            },
+                        }]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--repo", repo,
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            meta = inventory["sessions"][0]["meta"]
+            self.assertNotIn("cwd_candidates", meta)
+            self.assertNotIn("_cwd_candidates", meta)
 
     def test_selected_repo_accepts_any_tool_derived_candidate(self):
         with tempfile.TemporaryDirectory() as tmp:
