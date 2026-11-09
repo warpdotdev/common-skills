@@ -4,7 +4,7 @@ description: "Grades agent skills by scoring agent conversations for efficiency,
 ---
 # skill-doctor
 
-Grade the user's agent setup by scoring recent local agent conversations, then propose concrete skill edits and render one shareable report page.
+Grade the user's agent setup by scoring recent local agent conversations, including Cursor, then propose concrete skill edits and render one shareable report page.
 
 The report can cover conversations in the current repository, conversations in selected projects, or all local conversations. It can evaluate project skills alone or project and global skills together.
 
@@ -84,6 +84,14 @@ Useful flags:
 - `--max-sessions N` — cap on sampled sessions (default 12).
 - `--skills-dir PATH` — nonstandard skill locations.
 - `--include-subagents` — include child or sidechain sessions.
+- `--cursor-home PATH` — nonstandard Cursor home (default `CURSOR_HOME` or `~/.cursor`).
+- `--cursor-transcript PATH` — explicit Cursor transcript JSONL; repeatable.
+
+Cursor note: hooks expose a transcript path, but historical transcript storage
+and persisted JSONL records are not a documented stable API. The collector
+therefore discovers local history best-effort, accepts explicit
+`--cursor-transcript` paths, ignores unknown records, and may report fewer
+tool errors when a persisted transcript omits tool results.
 
 Read `$REPORT_DIR/inventory.json`. If `sessions_sampled` is 0, tell the user there is nothing recent to score in the selected conversation scope (suggest raising `--days` or choosing different projects) and stop. If `skills_found` is 0, continue — the report becomes a case for creating skills, and `skill_coverage` is 0.
 
