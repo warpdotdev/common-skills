@@ -44,7 +44,8 @@ Harness-specific source overrides:
 Cursor hooks document a JSONL transcript path, but Cursor does not document
 the historical `~/.cursor/projects` layout or persisted record schema as a
 stable API. Historical discovery is best-effort. Explicit transcript paths
-are preferred when a hook provides them.
+are preferred when a hook provides them. Persisted transcripts contain tool
+calls but no tool results, so Cursor sessions report no tool errors.
 
 ## Skill locations
 
@@ -53,5 +54,6 @@ Project skills are discovered from:
 - `.agents/skills`
 - `.claude/skills`
 - `.codex/skills`
+- `.cursor/skills`
 
 Global skills are discovered from the corresponding directories under the user's home and configured harness homes when `--include-global-skills` is set: `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`, `~/.cursor/skills`, Pi's skill directory under its agent home (default `~/.pi/agent/skills`), Grok Build's `~/.grok/skills`, and ZCode's `~/.zcode/skills`.

@@ -90,8 +90,10 @@ Useful flags:
 Cursor note: hooks expose a transcript path, but historical transcript storage
 and persisted JSONL records are not a documented stable API. The collector
 therefore discovers local history best-effort, accepts explicit
-`--cursor-transcript` paths, ignores unknown records, and may report fewer
-tool errors when a persisted transcript omits tool results.
+`--cursor-transcript` paths, and ignores unknown records. Persisted Cursor
+transcripts do not include tool results, so Cursor sessions always show 0
+error-ish outputs. Judge efficiency from the tool calls and assistant text,
+and do not treat the zero as evidence of clean execution.
 
 Read `$REPORT_DIR/inventory.json`. If `sessions_sampled` is 0, tell the user there is nothing recent to score in the selected conversation scope (suggest raising `--days` or choosing different projects) and stop. If `skills_found` is 0, continue — the report becomes a case for creating skills, and `skill_coverage` is 0.
 

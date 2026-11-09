@@ -38,7 +38,7 @@ TRANSCRIPT_TAIL = 40
 CODE_EDIT_HINTS = ("apply_patch", "*** Begin Patch", "edit_file", "create_file", "str_replace", "write_file")
 CLAUDE_CODE_EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 GENERIC_EDIT_TOOLS = {"edit", "write", "apply_patch", "edit_file", "write_file", "str_replace", "search_replace"}
-CURSOR_EDIT_TOOLS = {"ApplyPatch", "EditNotebook"}
+CURSOR_EDIT_TOOLS = {"ApplyPatch", "Delete", "EditNotebook", "StrReplace", "Write"}
 CURSOR_QUERY_RE = re.compile(
     r"<user_query>\s*(.*?)\s*</user_query>",
     re.DOTALL,
@@ -187,6 +187,7 @@ def discover_skills(repos, codex_home: Path, cursor_home, extra_dirs, include_gl
             repo / ".agents" / "skills",
             repo / ".claude" / "skills",
             repo / ".codex" / "skills",
+            repo / ".cursor" / "skills",
         ))
     if include_global:
         roots += [
@@ -468,9 +469,13 @@ class TranscriptBuffer:
 
 
 def cursor_project_key(path: Path) -> str:
-    """Best-effort encoding observed in Cursor's local project directory."""
+    """Best-effort encoding observed in Cursor's local project directory.
+
+    Runs of non-alphanumerics collapse to one hyphen: ``/Users/a.b/.herdr/x``
+    is stored as ``Users-a-b-herdr-x``.
+    """
     text = str(path.expanduser().resolve())
-    return re.sub(r"[^A-Za-z0-9]", "-", text).lstrip("-")
+    return re.sub(r"[^A-Za-z0-9]+", "-", text).strip("-")
 
 
 def find_cursor_session_files(
@@ -572,19 +577,80 @@ def find_cursor_session_files(
     return files
 
 
-def cursor_workspace_hint(path: Path, repos, cursor_home: Path):
-    projects_root = cursor_home / "projects"
+def cursor_project_name(path: Path, cursor_home: Path):
+    """The ``~/.cursor/projects/<name>`` directory a transcript lives under."""
     try:
-        project_name = path.resolve().relative_to(
-            projects_root.resolve()
+        return path.resolve().relative_to(
+            (cursor_home / "projects").resolve()
         ).parts[0]
     except (OSError, ValueError, IndexError):
+        return None
+
+
+def cursor_workspace_hint(path: Path, repos, cursor_home: Path):
+    project_name = cursor_project_name(path, cursor_home)
+    if not project_name:
         return None
     for repo in repos:
         resolved = repo.expanduser().resolve()
         if project_name == cursor_project_key(resolved):
             return resolved
     return None
+
+
+def cursor_workspace_from_candidates(path: Path, candidates, cursor_home: Path):
+    """Find the workspace folder whose encoded key names the transcript's
+    project directory, searching each tool-derived directory and its parents.
+
+    Used when no --repo was given, so the workspace cannot be matched against
+    selected repositories. Returns None when nothing matches (for example the
+    ``empty-window`` project).
+    """
+    project_name = cursor_project_name(path, cursor_home)
+    if not project_name:
+        return None
+    for candidate in candidates:
+        current = Path(candidate)
+        for directory in (current, *current.parents):
+            if cursor_project_key(directory) == project_name:
+                return str(directory)
+    return decode_cursor_project_key(project_name)
+
+
+@lru_cache(maxsize=None)
+def decode_cursor_project_key(project_name, root="/", max_depth=12):
+    """Find an existing directory whose encoded key equals project_name.
+
+    The encoding is lossy (``a-b`` and ``a.b`` both become ``a-b``), so walk
+    the filesystem from root and follow only entries whose encoded name is a
+    prefix of what remains. Returns None when no directory matches, as for
+    deleted temp workspaces.
+    """
+    def walk(directory, remaining, depth):
+        if depth > max_depth:
+            return None
+        try:
+            entries = sorted(os.scandir(directory), key=lambda e: e.name)
+        except OSError:
+            return None
+        for entry in entries:
+            try:
+                if not entry.is_dir():
+                    continue
+            except OSError:
+                continue
+            key = re.sub(r"[^A-Za-z0-9]+", "-", entry.name).strip("-")
+            if not key:
+                continue
+            if remaining == key:
+                return str(Path(entry.path).resolve())
+            if remaining.startswith(key + "-"):
+                found = walk(entry.path, remaining[len(key) + 1:], depth + 1)
+                if found:
+                    return found
+        return None
+
+    return walk(root, project_name, 0)
 
 
 def parse_claude_session(path: Path, skill_names, include_subagents: bool):
@@ -1005,6 +1071,32 @@ def parse_sqlite_timestamp(value):
     if parsed.tzinfo is None:
         parsed = parsed.replace(tzinfo=timezone.utc)
     return parsed.astimezone(timezone.utc)
+
+
+def parse_activity_timestamp(value):
+    """Parse an ISO string or epoch (seconds or milliseconds) to aware UTC."""
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        seconds = value / 1000 if value > 1e12 else value
+        try:
+            return datetime.fromtimestamp(seconds, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return None
+    if isinstance(value, str):
+        return parse_sqlite_timestamp(value)
+    return None
+
+
+def session_recency(session):
+    """Sort key: the conversation's last activity, not the file's mtime.
+
+    Harnesses and sync tools rewrite old session files (Claude Code does),
+    which would otherwise put weeks-old conversations ahead of recent ones.
+    Falls back to the file mtime when no activity timestamp was parsed.
+    """
+    last = parse_activity_timestamp(session.get("stats", {}).get("last_ts"))
+    if last is None:
+        last = parse_activity_timestamp(session.get("modified_at"))
+    return last or datetime.min.replace(tzinfo=timezone.utc)
 
 
 def discover_warp_databases(explicit_paths=(), data_dir=None):
@@ -1968,20 +2060,22 @@ def infer_session_repos(sessions):
         has_cursor_candidates = "_cwd_candidates" in meta
         candidates = [meta.get("cwd")]
         candidates.extend(meta.get("_cwd_candidates") or [])
+        # One repository per session: the first git root, in priority order
+        # (workspace, working directories, then file paths). Adding every root
+        # a tool touched would pull in plugin caches and scratch clones.
         session_root = None
         for cwd in candidates:
-            if not cwd:
-                continue
-            root = git_root_for_directory(cwd)
-            if not root:
-                continue
-            session_root = session_root or root
-            repo = Path(root)
-            if repo in seen:
-                continue
+            if cwd:
+                session_root = git_root_for_directory(cwd)
+                if session_root:
+                    break
+        if not session_root:
+            continue
+        repo = Path(session_root)
+        if repo not in seen:
             seen.add(repo)
             repos.append(repo)
-        if session_root and has_cursor_candidates:
+        if has_cursor_candidates:
             meta["cwd"] = session_root
     return repos
 
@@ -2153,6 +2247,14 @@ def main():
                 if parsed is None:
                     continue
                 meta, stats, entries, skills_used = parsed
+                if workspace_hint is None:
+                    workspace = cursor_workspace_from_candidates(
+                        path,
+                        meta["_cwd_candidates"],
+                        cursor_home,
+                    )
+                    if workspace:
+                        meta["cwd"] = workspace
                 if not args.all_conversations:
                     matched_repo = matching_repo_for_session_meta(meta, repos)
                     if matched_repo is None:
@@ -2388,7 +2490,7 @@ def main():
             (set(session["skills_used"]) | detected) & installed_skill_names
         )
 
-    sessions.sort(key=lambda session: session["modified_at"], reverse=True)
+    sessions.sort(key=session_recency, reverse=True)
     for session in sessions:
         session["_key"] = f"{session['harness']}:{session['meta']['id']}"
 

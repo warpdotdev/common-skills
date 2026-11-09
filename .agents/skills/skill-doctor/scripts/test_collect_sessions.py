@@ -14,6 +14,7 @@ from unittest import mock
 from collect_sessions import (
     cursor_project_key,
     cursor_workspace_hint,
+    decode_cursor_project_key,
     detect_skills_from_entries,
     discover_hermes_databases,
     discover_skills,
@@ -33,6 +34,7 @@ from collect_sessions import (
     parse_zcode_session,
     resolve_hermes_home,
     session_meta_matches_repos,
+    session_recency,
     session_matches_repos,
 )
 
@@ -605,6 +607,54 @@ class CursorSessionTests(unittest.TestCase):
             cursor_project_key(repo),
             "Users-ada-lovelace-src-sample-repo",
         )
+
+    def test_collapses_separator_runs_like_cursor(self):
+        # Observed: ~/.herdr/worktrees/... -> Users-<user>-herdr-worktrees-...
+        repo = Path("/Users/ada.lovelace/.herdr/worktrees/repo__x")
+        self.assertEqual(
+            cursor_project_key(repo),
+            "Users-ada-lovelace-herdr-worktrees-repo-x",
+        )
+
+    def test_decodes_project_key_by_walking_filesystem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "a.b" / "my-repo"
+            target.mkdir(parents=True)
+            (root / "a-b-my").mkdir()  # shares a prefix, wrong branch
+            self.assertEqual(
+                decode_cursor_project_key("a-b-my-repo", str(root)),
+                str(target.resolve()),
+            )
+            self.assertIsNone(
+                decode_cursor_project_key("a-b-gone", str(root))
+            )
+
+    def test_marks_code_edits_for_cursor_edit_tools(self):
+        for tool in ("StrReplace", "Write", "Delete", "ApplyPatch"):
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as tmp:
+                transcript = Path(tmp) / "s" / "s.jsonl"
+                write_jsonl(transcript, [
+                    {"role": "user", "message": {"content": "edit it"}},
+                    {"role": "assistant", "message": {"content": [{
+                        "type": "tool_use",
+                        "name": tool,
+                        "input": {"path": "/tmp/x.py", "contents": "y"},
+                    }]}},
+                ])
+                _, stats, _, _ = parse_cursor_session(transcript, [], False)
+                self.assertTrue(stats["has_code_edits"])
+
+    def test_discovers_project_cursor_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            skill = repo / ".cursor" / "skills" / "cursor-project" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Cursor project skill\n---\n")
+
+            skills = discover_skills([repo], Path(tmp) / "codex", None, [], False)
+
+            self.assertIn("cursor-project", skills)
 
 
 class PiSessionTests(unittest.TestCase):
@@ -1265,6 +1315,31 @@ class HermesCollectorTests(unittest.TestCase):
             self.assertEqual(resolved, dot_hermes.resolve())
 
 
+class SamplingOrderTests(unittest.TestCase):
+    def test_recency_uses_last_activity_not_file_mtime(self):
+        touched_old = {
+            "modified_at": "2026-11-09T22:00:00+00:00",
+            "stats": {"last_ts": "2026-10-23T14:17:00Z"},
+        }
+        recent = {
+            "modified_at": "2026-11-09T17:00:00+00:00",
+            "stats": {"last_ts": "2026-11-09T11:59:00-05:00"},
+        }
+        epoch_ms = {
+            "modified_at": "2026-11-09T22:00:00+00:00",
+            "stats": {"last_ts": 1762646400000},  # 2025-11-09T00:00Z
+        }
+        no_activity = {"modified_at": "2026-11-01T00:00:00+00:00", "stats": {}}
+
+        ordered = sorted(
+            [touched_old, epoch_ms, no_activity, recent],
+            key=session_recency,
+            reverse=True,
+        )
+
+        self.assertEqual(ordered, [recent, no_activity, touched_old, epoch_ms])
+
+
 class CursorCollectorIntegrationTests(unittest.TestCase):
     def run_collector(self, *args):
         script = Path(__file__).with_name("collect_sessions.py")
@@ -1587,6 +1662,57 @@ class CursorCollectorIntegrationTests(unittest.TestCase):
                 inventory["skill_usage"]["attached-project"],
                 1,
             )
+
+    def test_all_conversations_uses_project_key_workspace_and_one_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "work.space" / "main-repo"
+            other = root / "plugin-cache"
+            for path in (repo, other):
+                path.mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", str(path)], check=True)
+            other_skill = other / ".agents" / "skills" / "cache-skill" / "SKILL.md"
+            other_skill.parent.mkdir(parents=True)
+            other_skill.write_text("---\ndescription: Cache skill\n---\n")
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "session-key"
+                / "session-key.jsonl"
+            )
+            # The first file read is in another git repo; the project key
+            # names main-repo, which no tool call uses as a directory.
+            write_jsonl(transcript, [
+                {"role": "user", "message": {"content": "Look around"}},
+                {"role": "assistant", "message": {"content": [
+                    {
+                        "type": "tool_use",
+                        "name": "ReadFile",
+                        "input": {"path": str(other_skill)},
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "ReadFile",
+                        "input": {"path": str(repo / "src" / "app.py")},
+                    },
+                ]}},
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--all-conversations",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["repos"], [str(repo.resolve())])
+            self.assertNotIn("cache-skill", inventory["skill_usage"])
 
     def test_cursor_source_exists_with_zero_recent_history(self):
         with tempfile.TemporaryDirectory() as tmp:
