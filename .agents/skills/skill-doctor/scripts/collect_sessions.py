@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""Collect local Claude Code, Codex, Warp, Pi, Grok Build, and ZCode sessions and skills for scoring.
+"""Collect local Claude Code, Codex, Cursor, Warp, Pi, Grok Build, and ZCode sessions and skills for scoring.
 
-Scans Claude Code project history, Codex rollout files, Warp's local
+Scans Claude Code project history, Codex rollout files, Cursor Agent
+transcripts, Warp's local
 conversation databases, Pi agent session JSONL, Grok Build chat history,
 and/or ZCode model-io rollouts, discovers installed skills, detects which
 sessions used which skills, and emits:
@@ -56,9 +57,31 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--harness",
-        choices=("auto", "all", "claude", "codex", "warp", "pi", "grok", "zcode", "hermes"),
+        choices=(
+            "auto",
+            "all",
+            "claude",
+            "codex",
+            "cursor",
+            "warp",
+            "pi",
+            "grok",
+            "zcode",
+            "hermes",
+        ),
         default="auto",
         help="session source (default: auto; scans every locally available source)",
+    )
+    p.add_argument(
+        "--cursor-home",
+        default=os.environ.get("CURSOR_HOME", "~/.cursor"),
+        help="Cursor home directory (default: CURSOR_HOME or ~/.cursor)",
+    )
+    p.add_argument(
+        "--cursor-transcript",
+        action="append",
+        default=[],
+        help="explicit Cursor transcript JSONL path (repeatable)",
     )
     p.add_argument(
         "--claude-home",
@@ -109,7 +132,7 @@ def parse_args():
         help="score conversations from every project represented in local history",
     )
     p.add_argument("--include-global-skills", action="store_true",
-                   help="also discover skills outside the repo (~/.codex/skills, ~/.agents/skills, ~/.claude/skills, ~/.pi/agent/skills, ~/.grok/skills, ~/.zcode/skills, Hermes home/skills)")
+                   help="also discover skills outside the repo (~/.codex/skills, ~/.cursor/skills, ~/.agents/skills, ~/.claude/skills, ~/.pi/agent/skills, ~/.grok/skills, ~/.zcode/skills, Hermes home/skills)")
     p.add_argument("--days", type=int, default=45, help="only consider sessions modified in the last N days")
     p.add_argument("--max-sessions", type=int, default=12, help="max sessions to sample for scoring")
     p.add_argument("--per-skill", type=int, default=3, help="max sampled sessions per skill")
@@ -148,7 +171,7 @@ def resolve_repos(repo_args):
     return repos
 
 
-def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool,
+def discover_skills(repos, codex_home: Path, cursor_home, extra_dirs, include_global: bool,
                     pi_home: Path = None, grok_home: Path = None, zcode_home: Path = None,
                     hermes_home: Path = None):
     if isinstance(repos, Path):
@@ -166,6 +189,8 @@ def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool,
             Path.home() / ".agents" / "skills",
             Path.home() / ".claude" / "skills",
         ]
+        if cursor_home is not None:
+            roots.append(Path(cursor_home) / "skills")
         for home in (pi_home, grok_home, zcode_home, hermes_home):
             if home is not None:
                 roots.append(Path(home) / "skills")
@@ -1838,6 +1863,7 @@ def main():
         sys.exit(2)
     claude_home = Path(args.claude_home).expanduser()
     codex_home = Path(args.codex_home).expanduser()
+    cursor_home = Path(args.cursor_home).expanduser()
     pi_home = Path(args.pi_home).expanduser()
     grok_home = Path(args.grok_home).expanduser()
     zcode_home = Path(args.zcode_home).expanduser()
@@ -1850,6 +1876,7 @@ def main():
     skills = discover_skills(
         repos,
         codex_home,
+        cursor_home,
         args.skills_dir,
         args.include_global_skills,
         pi_home=pi_home,
@@ -1935,6 +1962,63 @@ def main():
     elif args.harness == "codex":
         print(f"error: Codex home not found at {codex_home}", file=sys.stderr)
         sys.exit(1)
+
+    requested_cursor = args.harness in ("auto", "all", "cursor")
+    cursor_files = []
+    if requested_cursor:
+        cursor_files = find_cursor_session_files(
+            cursor_home,
+            cutoff,
+            args.include_subagents,
+            args.cursor_transcript,
+        )
+        if cursor_files:
+            sources["cursor"] = {
+                "home": str(cursor_home),
+                "records_in_window": len(cursor_files),
+                "explicit_transcripts": len(args.cursor_transcript),
+            }
+            scanned_count += len(cursor_files)
+            for mtime, path in cursor_files:
+                workspace_hint = cursor_workspace_hint(
+                    path,
+                    repos,
+                    cursor_home,
+                )
+                parsed = parse_cursor_session(
+                    path,
+                    skills.keys(),
+                    args.include_subagents,
+                    workspace_hint=workspace_hint,
+                )
+                if parsed is None:
+                    continue
+                meta, stats, entries, skills_used = parsed
+                if not args.all_conversations and not session_matches_repos(
+                    meta.get("cwd"),
+                    repos,
+                ):
+                    continue
+                in_scope_count += 1
+                if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
+                    continue
+                sessions.append({
+                    "harness": "cursor",
+                    "meta": meta,
+                    "stats": stats,
+                    "skills_used": skills_used,
+                    "file": str(path),
+                    "modified_at": mtime.isoformat(),
+                    "_entries": entries,
+                })
+        elif args.harness == "cursor":
+            print(
+                "error: no Cursor Agent transcripts found under "
+                f"{cursor_home / 'projects'} and no readable "
+                "--cursor-transcript was supplied",
+                file=sys.stderr,
+            )
+            sys.exit(1)
 
     requested_warp = args.harness in ("auto", "all", "warp")
     warp_databases = []
@@ -2116,7 +2200,7 @@ def main():
 
     if not sources:
         print(
-            "error: no supported session source found (Claude Code, Codex, Warp, Pi, Grok, ZCode, or Hermes)",
+            "error: no supported session source found (Claude Code, Codex, Cursor, Warp, Pi, Grok, ZCode, or Hermes)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -2125,6 +2209,7 @@ def main():
         skills = discover_skills(
             repos,
             codex_home,
+            cursor_home,
             args.skills_dir,
             args.include_global_skills,
             pi_home=pi_home,
@@ -2196,6 +2281,7 @@ def main():
         "sources": sources,
         "claude_home": str(claude_home) if "claude" in sources else None,
         "codex_home": str(codex_home) if "codex" in sources else None,
+        "cursor_home": str(cursor_home) if "cursor" in sources else None,
         "pi_home": str(pi_home) if "pi" in sources else None,
         "grok_home": str(grok_home) if "grok" in sources else None,
         "zcode_home": str(zcode_home) if "zcode" in sources else None,

@@ -3,6 +3,8 @@
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
@@ -65,6 +67,7 @@ class ClaudeSessionTests(unittest.TestCase):
             skills = discover_skills(
                 [first, second],
                 root / "codex-home",
+                None,
                 [],
                 False,
             )
@@ -82,7 +85,7 @@ class ClaudeSessionTests(unittest.TestCase):
             root = Path(tmp)
             homes = {
                 name: root / f"{name}-home"
-                for name in ("codex", "pi", "grok", "zcode", "hermes")
+                for name in ("codex", "cursor", "pi", "grok", "zcode", "hermes")
             }
             for name, home in homes.items():
                 skill = home / "skills" / f"{name}-skill" / "SKILL.md"
@@ -92,6 +95,7 @@ class ClaudeSessionTests(unittest.TestCase):
             skills = discover_skills(
                 [],
                 homes["codex"],
+                homes["cursor"],
                 [],
                 True,
                 pi_home=homes["pi"],
@@ -103,6 +107,7 @@ class ClaudeSessionTests(unittest.TestCase):
             self.assertTrue(
                 {
                     "codex-skill",
+                    "cursor-skill",
                     "pi-skill",
                     "grok-skill",
                     "zcode-skill",
@@ -1133,6 +1138,80 @@ class HermesCollectorTests(unittest.TestCase):
                     os.environ["HERMES_HOME"] = old_hermes_home
 
             self.assertEqual(resolved, dot_hermes.resolve())
+
+
+class CursorCollectorIntegrationTests(unittest.TestCase):
+    def test_main_writes_cursor_inventory_and_condensed_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "sample-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            skill = repo / ".agents" / "skills" / "sample-skill" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text(
+                "---\nname: sample-skill\ndescription: Test skill\n---\n"
+            )
+
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "session-1"
+                / "session-1.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {
+                        "content": [{
+                            "type": "text",
+                            "text": "<user_query>Use the skill</user_query>",
+                        }]
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "ReadFile",
+                            "input": {"path": str(skill)},
+                        }]
+                    },
+                },
+            ])
+            out = root / "report"
+            script = Path(__file__).with_name("collect_sessions.py")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--harness",
+                    "cursor",
+                    "--cursor-home",
+                    str(cursor_home),
+                    "--repo",
+                    str(repo),
+                    "--out",
+                    str(out),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["harness"], "cursor")
+            self.assertEqual(inventory["cursor_home"], str(cursor_home))
+            self.assertEqual(inventory["stats"]["sessions_sampled"], 1)
+            self.assertEqual(inventory["skill_usage"]["sample-skill"], 1)
+            rendered = next((out / "transcripts").glob("*.md")).read_text()
+            self.assertIn("[user] Use the skill", rendered)
+            self.assertIn("skills detected: sample-skill", rendered)
 
 
 if __name__ == "__main__":
