@@ -481,6 +481,13 @@ class CursorSessionTests(unittest.TestCase):
 
             self.assertEqual(hint, repo.resolve())
 
+    def test_encodes_dot_in_repository_path_as_hyphen(self):
+        repo = Path("/Users/ada.lovelace/src/sample-repo")
+        self.assertEqual(
+            cursor_project_key(repo),
+            "Users-ada-lovelace-src-sample-repo",
+        )
+
 
 class PiSessionTests(unittest.TestCase):
     def test_parses_messages_tools_skills_and_stats(self):

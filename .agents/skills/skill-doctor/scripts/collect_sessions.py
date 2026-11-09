@@ -394,12 +394,7 @@ class TranscriptBuffer:
 def cursor_project_key(path: Path) -> str:
     """Best-effort encoding observed in Cursor's local project directory."""
     text = str(path.expanduser().resolve())
-    return (
-        text.replace("\\", "-")
-        .replace("/", "-")
-        .replace(":", "-")
-        .lstrip("-")
-    )
+    return re.sub(r"[^A-Za-z0-9]", "-", text).lstrip("-")
 
 
 def find_cursor_session_files(
