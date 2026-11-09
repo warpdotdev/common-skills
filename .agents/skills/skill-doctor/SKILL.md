@@ -48,7 +48,17 @@ Then ask **“Which skills should I evaluate?”** with:
 1. **Project skills + global skills** — recommended.
 2. **Project skills only**.
 
-For an all-conversations run, “Project skills” means skills from local git repositories inferred from the conversations' working directories. After these answers, proceed immediately.
+For an all-conversations run, “Project skills” means skills from local git repositories inferred from the conversations' working directories.
+
+### Ask how many conversations to score
+
+Then ask **“How many conversations should I score?”** with:
+
+1. **Quick sample** — recommended. Up to 12, at most 3 per skill.
+2. **Broad sample**. Up to 40, at most 3 per skill. Covers many more skills; scoring takes several times longer.
+3. **Every conversation**. No limits. Can be hundreds of conversations; scoring is slow and costly.
+
+The conversation and skill choices only set which conversations can be picked. This choice sets how many are actually scored. After these answers, proceed immediately.
 
 Never write artifacts into the user's repo. Create one fresh, collision-free scratch directory per run and use it as `REPORT_DIR` for every artifact:
 
@@ -64,12 +74,16 @@ Build the collector arguments from the startup answers:
 - All conversations: `--all-conversations`.
 - Project and global skills: add `--include-global-skills`.
 - Project skills only: do not add `--include-global-skills`.
+- Quick sample: no extra arguments (the defaults).
+- Broad sample: `--max-sessions 40 --per-skill 3 --no-skill 6`.
+- Every conversation: `--max-sessions 0 --per-skill 0 --no-skill 0` (0 means no limit).
 
 ```bash
 python3 "$SKILL_ROOT/scripts/collect_sessions.py" \
   --out "$REPORT_DIR" \
   <conversation-scope arguments> \
-  <skill-scope arguments>
+  <skill-scope arguments> \
+  <sample-size arguments>
 ```
 
 By default `--harness auto` scans every locally available supported source. Read `$SKILL_ROOT/references/supported-harnesses.md` for source identifiers, storage details, skill locations, and source-specific override flags.
@@ -81,7 +95,9 @@ Useful flags:
 - `--all-conversations` — do not filter conversations by project.
 - `--include-global-skills` — also grade global skills.
 - `--days N` — lookback window (default 45).
-- `--max-sessions N` — cap on sampled sessions (default 12).
+- `--max-sessions N` — cap on sampled sessions (default 12; 0 = no limit).
+- `--per-skill N` — cap on sampled sessions per skill (default 3; 0 = no limit).
+- `--no-skill N` — cap on sampled sessions that used no skill (default 4; 0 = no limit).
 - `--skills-dir PATH` — nonstandard skill locations.
 - `--include-subagents` — include child or sidechain sessions.
 - `--cursor-home PATH` — nonstandard Cursor home (default `CURSOR_HOME` or `~/.cursor`).
@@ -184,7 +200,7 @@ This writes a single self-contained `$REPORT_DIR/report.html` and attempts to op
 
 ## Step 6: Output
 
-Tell the user the grade and the three findings, in text.
+Tell the user the grade and the three findings, in text. Also say how many conversations were scored out of how many were scoreable (`sessions_sampled` and `sessions_considered` in `inventory.json`). When fewer were scored, say that skills seen only in unscored conversations were not graded.
 
 Finish every response with this exact summary, substituting the absolute `REPORT_DIR` path:
 

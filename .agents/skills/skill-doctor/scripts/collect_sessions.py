@@ -139,9 +139,9 @@ def parse_args():
     p.add_argument("--include-global-skills", action="store_true",
                    help="also discover skills outside the repo (~/.codex/skills, ~/.cursor/skills, ~/.agents/skills, ~/.claude/skills, ~/.pi/agent/skills, ~/.grok/skills, ~/.zcode/skills, Hermes home/skills)")
     p.add_argument("--days", type=int, default=45, help="only consider sessions modified in the last N days")
-    p.add_argument("--max-sessions", type=int, default=12, help="max sessions to sample for scoring")
-    p.add_argument("--per-skill", type=int, default=3, help="max sampled sessions per skill")
-    p.add_argument("--no-skill", type=int, default=4, help="max sampled sessions that used no skill")
+    p.add_argument("--max-sessions", type=int, default=12, help="max sessions to sample for scoring (0 = no limit)")
+    p.add_argument("--per-skill", type=int, default=3, help="max sampled sessions per skill (0 = no limit)")
+    p.add_argument("--no-skill", type=int, default=4, help="max sampled sessions that used no skill (0 = no limit)")
     p.add_argument("--skills-dir", action="append", default=[], help="extra skills directory to scan (repeatable)")
     p.add_argument("--include-subagents", action="store_true", help="include subagent/child sessions")
     p.add_argument("--out", default="./skill-doctor-report")
@@ -2495,19 +2495,23 @@ def main():
         session["_key"] = f"{session['harness']}:{session['meta']['id']}"
 
     # Sample: newest-first, up to per-skill sessions per skill, then no-skill sessions.
+    # A limit of 0 means no limit, so 0/0/0 scores every scoreable session.
+    max_sessions = args.max_sessions or float("inf")
+    per_skill = args.per_skill or float("inf")
+    no_skill = args.no_skill or float("inf")
     sampled_keys = set()
     per_skill_count = {name: 0 for name in skills}
     for s in sessions:
-        if len(sampled_keys) >= args.max_sessions:
+        if len(sampled_keys) >= max_sessions:
             break
         for name in s["skills_used"]:
-            if per_skill_count.get(name, 0) < args.per_skill:
+            if per_skill_count.get(name, 0) < per_skill:
                 per_skill_count[name] = per_skill_count.get(name, 0) + 1
                 sampled_keys.add(s["_key"])
                 break
     no_skill_taken = 0
     for s in sessions:
-        if len(sampled_keys) >= args.max_sessions or no_skill_taken >= args.no_skill:
+        if len(sampled_keys) >= max_sessions or no_skill_taken >= no_skill:
             break
         if not s["skills_used"] and s["_key"] not in sampled_keys:
             sampled_keys.add(s["_key"])

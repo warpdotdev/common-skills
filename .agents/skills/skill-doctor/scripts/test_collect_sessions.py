@@ -1748,6 +1748,56 @@ class CursorCollectorIntegrationTests(unittest.TestCase):
             )
             self.assertEqual(inventory["stats"]["sessions_considered"], 0)
 
+    def test_zero_limits_sample_every_scoreable_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor-home"
+            skill = cursor_home / "skills" / "busy-skill" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Busy skill\n---\n")
+            # Five sessions that use the same skill, and five that use none.
+            for index in range(10):
+                tool_input = (
+                    {"path": str(skill)} if index < 5 else {"path": "/tmp/x"}
+                )
+                write_jsonl(
+                    cursor_home / "projects" / "key" / "agent-transcripts"
+                    / f"s{index}" / f"s{index}.jsonl",
+                    [
+                        {"role": "user", "message": {"content": "go"}},
+                        {"role": "assistant", "message": {"content": [{
+                            "type": "tool_use",
+                            "name": "ReadFile",
+                            "input": tool_input,
+                        }]}},
+                    ],
+                )
+
+            def sampled(*limits):
+                out = root / f"report-{len(limits)}"
+                result = self.run_collector(
+                    "--harness", "cursor",
+                    "--cursor-home", cursor_home,
+                    "--all-conversations",
+                    "--include-global-skills",
+                    "--out", out,
+                    *limits,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                inventory = json.loads((out / "inventory.json").read_text())
+                return inventory["stats"]["sessions_sampled"]
+
+            # Defaults: 3 for the skill + 4 with no skill.
+            self.assertEqual(sampled(), 7)
+            self.assertEqual(
+                sampled(
+                    "--max-sessions", "0",
+                    "--per-skill", "0",
+                    "--no-skill", "0",
+                ),
+                10,
+            )
+
     def test_explicit_transcripts_warn_and_report_requested_and_accepted(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
