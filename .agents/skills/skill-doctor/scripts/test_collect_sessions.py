@@ -383,6 +383,33 @@ class CursorSessionTests(unittest.TestCase):
             self.assertEqual(stats["assistant_turns"], 1)
             self.assertEqual(entries, [("assistant", "Done")])
 
+    def test_does_not_credit_skill_path_mentioned_in_user_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-query-skill.jsonl"
+            write_jsonl(path, [{
+                "role": "user",
+                "message": {
+                    "content": [{
+                        "type": "text",
+                        "text": (
+                            "<user_query>Review "
+                            "/repo/.agents/skills/example/SKILL.md"
+                            "</user_query>"
+                        ),
+                    }]
+                },
+            }])
+
+            _, _, entries, skills = parse_cursor_session(
+                path, {"example"}, False
+            )
+
+            self.assertEqual(skills, [])
+            self.assertIn(
+                ("user", "Review /repo/.agents/skills/example/SKILL.md"),
+                entries,
+            )
+
     def test_returns_none_for_nested_subagent_unless_included(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "parent-1" / "subagents" / "child-1.jsonl"
@@ -1148,6 +1175,14 @@ class HermesCollectorTests(unittest.TestCase):
 
 
 class CursorCollectorIntegrationTests(unittest.TestCase):
+    def run_collector(self, *args):
+        script = Path(__file__).with_name("collect_sessions.py")
+        return subprocess.run(
+            [sys.executable, str(script), *map(str, args)],
+            capture_output=True,
+            text=True,
+        )
+
     def test_main_writes_cursor_inventory_and_condensed_transcript(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -1219,6 +1254,286 @@ class CursorCollectorIntegrationTests(unittest.TestCase):
             rendered = next((out / "transcripts").glob("*.md")).read_text()
             self.assertIn("[user] Use the skill", rendered)
             self.assertIn("skills detected: sample-skill", rendered)
+
+    def test_selected_repo_accepts_any_tool_derived_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "selected-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "nonstandard-project-key"
+                / "agent-transcripts"
+                / "session-selected"
+                / "session-selected.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect the repository"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {
+                                    "path": str(
+                                        cursor_home
+                                        / "skills"
+                                        / "global"
+                                        / "SKILL.md"
+                                    ),
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {"path": str(repo / "README.md")},
+                            },
+                        ]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--repo", repo,
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["stats"]["sessions_considered"], 1)
+
+    def test_all_conversations_infers_repo_after_global_skill_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "inferred-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            skill = (
+                repo / ".agents" / "skills" / "project-skill" / "SKILL.md"
+            )
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Project skill\n---\n")
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "opaque-key"
+                / "agent-transcripts"
+                / "session-all"
+                / "session-all.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {"content": "Use the project skill"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {
+                                    "path": str(
+                                        cursor_home
+                                        / "skills"
+                                        / "global-skill"
+                                        / "SKILL.md"
+                                    ),
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "Shell",
+                                "input": {
+                                    "command": "git status",
+                                    "working_directory": str(repo),
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {"path": str(skill)},
+                            },
+                        ]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--all-conversations",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["repos"], [str(repo.resolve())])
+            self.assertEqual(inventory["skill_usage"]["project-skill"], 1)
+
+    def test_all_conversations_credits_attached_project_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "attached-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            skill = (
+                repo / ".agents" / "skills" / "attached-project" / "SKILL.md"
+            )
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Attached project skill\n---\n")
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "opaque-key"
+                / "agent-transcripts"
+                / "session-attached"
+                / "session-attached.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {
+                        "content": (
+                            "<manually_attached_skills>\n"
+                            "Skill Name: attached-project\n"
+                            f"Path: {skill}\n"
+                            "</manually_attached_skills>\n"
+                            "<user_query>Use the attached skill</user_query>"
+                        )
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {
+                                "command": "git status",
+                                "working_directory": str(repo),
+                            },
+                        }]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--all-conversations",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(
+                inventory["skill_usage"]["attached-project"],
+                1,
+            )
+
+    def test_cursor_source_exists_with_zero_recent_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor-home"
+            old = (
+                cursor_home
+                / "projects"
+                / "opaque-key"
+                / "agent-transcripts"
+                / "old"
+                / "old.jsonl"
+            )
+            write_jsonl(old, [{"role": "user", "message": {"content": "old"}}])
+            old_time = (
+                datetime.now(timezone.utc) - timedelta(days=10)
+            ).timestamp()
+            os.utime(old, (old_time, old_time))
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--days", "1",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(
+                inventory["sources"]["cursor"]["records_in_window"],
+                0,
+            )
+            self.assertEqual(inventory["stats"]["sessions_considered"], 0)
+
+    def test_explicit_transcripts_warn_and_report_requested_and_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor-home"
+            accepted = root / "accepted.jsonl"
+            old = root / "old.jsonl"
+            missing = root / "missing.jsonl"
+            unreadable = root / "not-a-file.jsonl"
+            unreadable.mkdir()
+            records = [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect this"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {"command": "pwd"},
+                        }]
+                    },
+                },
+            ]
+            write_jsonl(accepted, records)
+            write_jsonl(old, records)
+            old_time = (
+                datetime.now(timezone.utc) - timedelta(days=10)
+            ).timestamp()
+            os.utime(old, (old_time, old_time))
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--cursor-transcript", accepted,
+                "--cursor-transcript", old,
+                "--cursor-transcript", missing,
+                "--cursor-transcript", unreadable,
+                "--all-conversations",
+                "--days", "1",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for rejected in (old, missing, unreadable):
+                self.assertIn(str(rejected), result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            source = inventory["sources"]["cursor"]
+            self.assertEqual(source["explicit_transcripts_requested"], 4)
+            self.assertEqual(source["explicit_transcripts_accepted"], 1)
 
 
 if __name__ == "__main__":

@@ -51,6 +51,10 @@ CURSOR_ATTACHED_SKILL_RE = re.compile(
     r"^Skill Name:\s*([^\n]+)$",
     re.MULTILINE,
 )
+CURSOR_ATTACHED_SKILLS_BLOCK_RE = re.compile(
+    r"<manually_attached_skills>\s*(.*?)\s*</manually_attached_skills>",
+    re.DOTALL,
+)
 
 
 def parse_args():
@@ -315,12 +319,14 @@ def parse_cursor_prompt_timestamp(text):
 
 
 def extract_cursor_user_payload(text):
-    attached_skills = set(
-        name.strip()
-        for name in CURSOR_ATTACHED_SKILL_RE.findall(text)
-        if name.strip()
-    )
-    attached_skills.update(detect_skill_candidates(text))
+    attached_skills = set()
+    for block in CURSOR_ATTACHED_SKILLS_BLOCK_RE.findall(text):
+        attached_skills.update(
+            name.strip()
+            for name in CURSOR_ATTACHED_SKILL_RE.findall(block)
+            if name.strip()
+        )
+        attached_skills.update(detect_skill_candidates(block))
     timestamp = parse_cursor_prompt_timestamp(text)
     query = CURSOR_QUERY_RE.search(text)
     if query:
@@ -330,22 +336,80 @@ def extract_cursor_user_payload(text):
     return text.strip(), timestamp, attached_skills
 
 
-def cursor_cwd_from_tool_input(value):
+def cursor_cwd_candidates_from_tool_input(value):
     if not isinstance(value, dict):
-        return None
+        return [], []
+    working_directories = []
+    path_directories = []
     for key in ("working_directory", "cwd", "target_directory"):
         candidate = value.get(key)
         if isinstance(candidate, str) and os.path.isabs(candidate):
-            return candidate
+            working_directories.append(candidate)
     for key in ("path", "file_path"):
         candidate = value.get(key)
         if not isinstance(candidate, str) or not os.path.isabs(candidate):
             continue
         path = Path(candidate)
-        return str(path if path.is_dir() else path.parent)
+        path_directories.append(str(path if path.is_dir() else path.parent))
     nested = value.get("arguments")
     if isinstance(nested, dict):
-        return cursor_cwd_from_tool_input(nested)
+        nested_working, nested_paths = cursor_cwd_candidates_from_tool_input(
+            nested
+        )
+        working_directories.extend(nested_working)
+        path_directories.extend(nested_paths)
+    return working_directories, path_directories
+
+
+def git_root_for_directory(value):
+    path = Path(value).expanduser()
+    if not path.is_dir():
+        return None
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (subprocess.TimeoutExpired, OSError):
+        return None
+    if result.returncode != 0 or not result.stdout.strip():
+        return None
+    return str(Path(result.stdout.strip()).resolve())
+
+
+def unique_cursor_candidates(*groups):
+    candidates = []
+    seen = set()
+    for group in groups:
+        for value in group:
+            try:
+                normalized = str(Path(value).expanduser().resolve())
+            except OSError:
+                normalized = str(Path(value).expanduser())
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            candidates.append(normalized)
+    return candidates
+
+
+def select_cursor_cwd(workspace_hint, working_directories, path_directories):
+    if workspace_hint:
+        return str(Path(workspace_hint).expanduser().resolve())
+    ordered = unique_cursor_candidates(
+        working_directories,
+        path_directories,
+    )
+    for candidate in ordered:
+        git_root = git_root_for_directory(candidate)
+        if git_root:
+            return git_root
+    if working_directories:
+        return working_directories[0]
+    if path_directories:
+        return path_directories[0]
     return None
 
 
@@ -402,6 +466,7 @@ def find_cursor_session_files(
     cutoff: datetime,
     include_subagents: bool,
     explicit_paths,
+    return_explicit_counts=False,
 ):
     candidates = []
     root = cursor_home / "projects"
@@ -415,7 +480,6 @@ def find_cursor_session_files(
                     "*/agent-transcripts/*/subagents/*.jsonl"
                 )
             )
-    candidates.extend(Path(value).expanduser() for value in explicit_paths)
 
     files = []
     seen = set()
@@ -434,7 +498,65 @@ def find_cursor_session_files(
             continue
         seen.add(resolved)
         files.append((modified, path))
+
+    explicit_seen = set()
+    explicit_accepted = 0
+    for value in explicit_paths:
+        path = Path(value).expanduser()
+        try:
+            resolved = path.resolve()
+        except OSError as exc:
+            print(
+                f"warning: rejected explicit Cursor transcript {path}: {exc}",
+                file=sys.stderr,
+            )
+            continue
+        if resolved in explicit_seen:
+            print(
+                f"warning: rejected explicit Cursor transcript {path}: "
+                "duplicate path",
+                file=sys.stderr,
+            )
+            continue
+        explicit_seen.add(resolved)
+        try:
+            modified = datetime.fromtimestamp(
+                resolved.stat().st_mtime,
+                tz=timezone.utc,
+            )
+            with resolved.open("r", encoding="utf-8", errors="replace"):
+                pass
+        except OSError as exc:
+            print(
+                f"warning: rejected explicit Cursor transcript {path}: "
+                f"not readable ({exc})",
+                file=sys.stderr,
+            )
+            continue
+        if modified < cutoff:
+            print(
+                f"warning: rejected explicit Cursor transcript {path}: "
+                "older than cutoff",
+                file=sys.stderr,
+            )
+            continue
+        if resolved.parent.name == "subagents" and not include_subagents:
+            print(
+                f"warning: rejected explicit Cursor transcript {path}: "
+                "subagents are excluded",
+                file=sys.stderr,
+            )
+            continue
+        explicit_accepted += 1
+        if resolved not in seen:
+            seen.add(resolved)
+            files.append((modified, resolved))
     files.sort(key=lambda item: item[0], reverse=True)
+    if return_explicit_counts:
+        return files, {
+            "requested": len(explicit_paths),
+            "accepted": explicit_accepted,
+        }
     return files
 
 
@@ -624,6 +746,8 @@ def parse_cursor_session(
     seen_calls = {}
     skills_used = set()
     used_tool_names = set()
+    working_directories = []
+    path_directories = []
     has_code_edit_hint = False
     first_ts = last_ts = None
 
@@ -692,8 +816,9 @@ def parse_cursor_session(
                 has_code_edit_hint = has_code_edit_hint or any(
                     hint in args_text for hint in CODE_EDIT_HINTS
                 )
-                inferred_cwd = cursor_cwd_from_tool_input(args)
-                meta["cwd"] = meta.get("cwd") or inferred_cwd
+                working, paths = cursor_cwd_candidates_from_tool_input(args)
+                working_directories.extend(working)
+                path_directories.extend(paths)
                 entries.append((
                     f"tool:{name}",
                     truncate(args_text, MAX_TOOL_CHARS),
@@ -733,13 +858,21 @@ def parse_cursor_session(
         or bool(used_tool_names & GENERIC_EDIT_TOOLS)
         or has_code_edit_hint
     )
+    meta["cwd_candidates"] = unique_cursor_candidates(
+        working_directories,
+        path_directories,
+    )
+    meta["cwd"] = select_cursor_cwd(
+        workspace_hint,
+        working_directories,
+        path_directories,
+    )
     meta["started_at"] = stats["first_ts"]
-    installed = set(skill_names)
     return (
         meta,
         stats,
         entries.finish(),
-        sorted(skills_used & installed),
+        sorted(skills_used),
     )
 
 
@@ -1799,32 +1932,29 @@ def session_matches_repos(cwd, repos) -> bool:
     return any(session_matches_repo(cwd, repo) for repo in repos)
 
 
+def session_meta_matches_repos(meta, repos) -> bool:
+    candidates = [meta.get("cwd")]
+    candidates.extend(meta.get("cwd_candidates") or [])
+    return any(session_matches_repos(candidate, repos) for candidate in candidates)
+
+
 def infer_session_repos(sessions):
     repos = []
     seen = set()
     for session in sessions:
-        cwd = session["meta"].get("cwd")
-        if not cwd:
-            continue
-        path = Path(cwd).expanduser()
-        if not path.is_dir():
-            continue
-        try:
-            result = subprocess.run(
-                ["git", "-C", str(path), "rev-parse", "--show-toplevel"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-        except (subprocess.TimeoutExpired, OSError):
-            continue
-        if result.returncode != 0 or not result.stdout.strip():
-            continue
-        repo = Path(result.stdout.strip()).resolve()
-        if repo in seen:
-            continue
-        seen.add(repo)
-        repos.append(repo)
+        candidates = [session["meta"].get("cwd")]
+        candidates.extend(session["meta"].get("cwd_candidates") or [])
+        for cwd in candidates:
+            if not cwd:
+                continue
+            root = git_root_for_directory(cwd)
+            if not root:
+                continue
+            repo = Path(root)
+            if repo in seen:
+                continue
+            seen.add(repo)
+            repos.append(repo)
     return repos
 
 
@@ -1961,17 +2091,23 @@ def main():
     requested_cursor = args.harness in ("auto", "all", "cursor")
     cursor_files = []
     if requested_cursor:
-        cursor_files = find_cursor_session_files(
+        cursor_files, explicit_counts = find_cursor_session_files(
             cursor_home,
             cutoff,
             args.include_subagents,
             args.cursor_transcript,
+            return_explicit_counts=True,
         )
-        if cursor_files:
+        cursor_source_exists = (
+            (cursor_home / "projects").is_dir()
+            or bool(args.cursor_transcript)
+        )
+        if cursor_source_exists:
             sources["cursor"] = {
                 "home": str(cursor_home),
                 "records_in_window": len(cursor_files),
-                "explicit_transcripts": len(args.cursor_transcript),
+                "explicit_transcripts_requested": explicit_counts["requested"],
+                "explicit_transcripts_accepted": explicit_counts["accepted"],
             }
             scanned_count += len(cursor_files)
             for mtime, path in cursor_files:
@@ -1989,8 +2125,8 @@ def main():
                 if parsed is None:
                     continue
                 meta, stats, entries, skills_used = parsed
-                if not args.all_conversations and not session_matches_repos(
-                    meta.get("cwd"),
+                if not args.all_conversations and not session_meta_matches_repos(
+                    meta,
                     repos,
                 ):
                     continue
