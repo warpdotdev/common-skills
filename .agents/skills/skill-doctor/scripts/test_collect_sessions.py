@@ -9,10 +9,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from collect_sessions import (
+    cursor_project_key,
+    cursor_workspace_hint,
     detect_skills_from_entries,
     discover_hermes_databases,
     discover_skills,
     find_claude_session_files,
+    find_cursor_session_files,
     find_grok_session_files,
     find_hermes_sessions,
     find_pi_session_files,
@@ -374,6 +377,104 @@ class CursorSessionTests(unittest.TestCase):
             self.assertEqual(stats["user_turns"], 0)
             self.assertEqual(stats["assistant_turns"], 1)
             self.assertEqual(entries, [("assistant", "Done")])
+
+    def test_returns_none_for_nested_subagent_unless_included(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "parent-1" / "subagents" / "child-1.jsonl"
+            write_jsonl(path, [{"role": "user"}])
+
+            self.assertIsNone(parse_cursor_session(path, set(), False))
+            parsed = parse_cursor_session(path, set(), True)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed[0]["thread_source"], "subagent")
+
+    def test_discovers_parents_and_optional_subagents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cursor_home = Path(tmp)
+            transcript_root = (
+                cursor_home
+                / "projects"
+                / "tmp-repo"
+                / "agent-transcripts"
+                / "parent-1"
+            )
+            parent = transcript_root / "parent-1.jsonl"
+            child = transcript_root / "subagents" / "child-1.jsonl"
+            old = (
+                cursor_home
+                / "projects"
+                / "tmp-repo"
+                / "agent-transcripts"
+                / "old"
+                / "old.jsonl"
+            )
+            for transcript in (parent, child, old):
+                write_jsonl(transcript, [{"role": "user"}])
+            old_time = (
+                datetime.now(timezone.utc) - timedelta(days=10)
+            ).timestamp()
+            os.utime(old, (old_time, old_time))
+            cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+            parents = find_cursor_session_files(
+                cursor_home, cutoff, False, []
+            )
+            with_children = find_cursor_session_files(
+                cursor_home, cutoff, True, []
+            )
+
+            self.assertEqual([path for _, path in parents], [parent])
+            self.assertEqual(
+                {path for _, path in with_children},
+                {parent, child},
+            )
+
+    def test_deduplicates_explicit_and_discovered_transcripts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cursor_home = Path(tmp)
+            transcript = (
+                cursor_home
+                / "projects"
+                / "tmp-repo"
+                / "agent-transcripts"
+                / "parent-1"
+                / "parent-1.jsonl"
+            )
+            write_jsonl(transcript, [{"role": "user"}])
+            cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+            files = find_cursor_session_files(
+                cursor_home,
+                cutoff,
+                False,
+                [str(transcript)],
+            )
+
+            self.assertEqual([path for _, path in files], [transcript])
+
+    def test_matches_selected_repo_without_decoding_project_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / ".cursor"
+            repo = root / "repo-with-hyphens"
+            repo.mkdir()
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "parent-1"
+                / "parent-1.jsonl"
+            )
+            write_jsonl(transcript, [{"role": "user"}])
+
+            hint = cursor_workspace_hint(
+                transcript,
+                [repo],
+                cursor_home,
+            )
+
+            self.assertEqual(hint, repo.resolve())
 
 
 class PiSessionTests(unittest.TestCase):

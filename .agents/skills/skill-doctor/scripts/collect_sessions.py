@@ -366,6 +366,73 @@ class TranscriptBuffer:
         ] + list(self._tail)
 
 
+def cursor_project_key(path: Path) -> str:
+    """Best-effort encoding observed in Cursor's local project directory."""
+    text = str(path.expanduser().resolve())
+    return (
+        text.replace("\\", "-")
+        .replace("/", "-")
+        .replace(":", "-")
+        .lstrip("-")
+    )
+
+
+def find_cursor_session_files(
+    cursor_home: Path,
+    cutoff: datetime,
+    include_subagents: bool,
+    explicit_paths,
+):
+    candidates = []
+    root = cursor_home / "projects"
+    if root.is_dir():
+        candidates.extend(
+            root.glob("*/agent-transcripts/*/*.jsonl")
+        )
+        if include_subagents:
+            candidates.extend(
+                root.glob(
+                    "*/agent-transcripts/*/subagents/*.jsonl"
+                )
+            )
+    candidates.extend(Path(value).expanduser() for value in explicit_paths)
+
+    files = []
+    seen = set()
+    for path in candidates:
+        try:
+            resolved = path.resolve()
+            modified = datetime.fromtimestamp(
+                resolved.stat().st_mtime,
+                tz=timezone.utc,
+            )
+        except OSError:
+            continue
+        if resolved in seen or modified < cutoff:
+            continue
+        if resolved.parent.name == "subagents" and not include_subagents:
+            continue
+        seen.add(resolved)
+        files.append((modified, path))
+    files.sort(key=lambda item: item[0], reverse=True)
+    return files
+
+
+def cursor_workspace_hint(path: Path, repos, cursor_home: Path):
+    projects_root = cursor_home / "projects"
+    try:
+        project_name = path.resolve().relative_to(
+            projects_root.resolve()
+        ).parts[0]
+    except (OSError, ValueError, IndexError):
+        return None
+    for repo in repos:
+        resolved = repo.expanduser().resolve()
+        if project_name == cursor_project_key(resolved):
+            return resolved
+    return None
+
+
 def parse_claude_session(path: Path, skill_names, include_subagents: bool):
     """Normalize one Claude Code JSONL session to the shared transcript shape."""
     try:
