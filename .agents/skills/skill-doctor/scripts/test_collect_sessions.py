@@ -18,6 +18,7 @@ from collect_sessions import (
     find_pi_session_files,
     parse_claude_session,
     parse_codex_session,
+    parse_cursor_session,
     parse_grok_session,
     parse_hermes_session,
     parse_pi_session,
@@ -246,6 +247,133 @@ class ClaudeSessionTests(unittest.TestCase):
             parsed = parse_claude_session(path, set(), True)
             self.assertEqual(parsed[0]["id"], "session-1-child-1")
             self.assertEqual(parsed[0]["thread_source"], "subagent")
+
+
+class CursorSessionTests(unittest.TestCase):
+    def test_parses_wrapped_query_tools_attached_skills_and_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-1.jsonl"
+            write_jsonl(path, [
+                {
+                    "role": "user",
+                    "message": {
+                        "content": [{
+                            "type": "text",
+                            "text": (
+                                "<manually_attached_skills>\n"
+                                "Skill Name: attached-skill\n"
+                                "Path: /tmp/.cursor/skills/attached-skill/SKILL.md\n"
+                                "</manually_attached_skills>\n"
+                                "<timestamp>Monday, Nov 9, 2026, 1:02 PM (UTC-5)</timestamp>\n"
+                                "<user_query>\nFix the collector\n</user_query>"
+                            ),
+                        }]
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "I will inspect it."},
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {
+                                    "path": "/repo/.agents/skills/read-skill/SKILL.md"
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "ApplyPatch",
+                                "input": {"patch": "*** Begin Patch"},
+                            },
+                        ]
+                    },
+                },
+            ])
+
+            meta, stats, entries, skills = parse_cursor_session(
+                path,
+                {"attached-skill", "read-skill"},
+                False,
+                workspace_hint="/repo",
+            )
+
+            self.assertEqual(meta["id"], "session-1")
+            self.assertEqual(meta["cwd"], "/repo")
+            self.assertEqual(meta["originator"], "cursor")
+            self.assertEqual(meta["thread_source"], None)
+            self.assertEqual(stats["user_turns"], 1)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(stats["tool_calls"], 2)
+            self.assertEqual(stats["repeated_tool_calls"], 0)
+            self.assertTrue(stats["has_code_edits"])
+            self.assertEqual(
+                stats["first_ts"],
+                "2026-11-09T13:02:00-05:00",
+            )
+            self.assertEqual(skills, ["attached-skill", "read-skill"])
+            self.assertIn(("user", "Fix the collector"), entries)
+            self.assertIn(("assistant", "I will inspect it."), entries)
+            self.assertNotIn("manually_attached_skills", json.dumps(entries))
+
+    def test_counts_repeated_calls_and_optional_tool_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-2.jsonl"
+            tool = {
+                "type": "tool_use",
+                "name": "Shell",
+                "input": {"command": "false", "working_directory": "/tmp/repo"},
+            }
+            write_jsonl(path, [
+                {
+                    "role": "user",
+                    "message": {"content": [{"type": "text", "text": "Run it"}]},
+                },
+                {
+                    "role": "assistant",
+                    "message": {"content": [tool, tool]},
+                },
+                {
+                    "role": "tool",
+                    "message": {
+                        "content": [{
+                            "type": "tool_result",
+                            "is_error": True,
+                            "content": "command failed",
+                        }]
+                    },
+                },
+            ])
+
+            meta, stats, entries, skills = parse_cursor_session(
+                path, set(), False
+            )
+
+            self.assertEqual(meta["cwd"], "/tmp/repo")
+            self.assertEqual(stats["tool_calls"], 2)
+            self.assertEqual(stats["repeated_tool_calls"], 1)
+            self.assertEqual(stats["error_outputs"], 1)
+            self.assertIn(("output", "command failed"), entries)
+            self.assertEqual(skills, [])
+
+    def test_ignores_malformed_lines_unknown_blocks_and_injected_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-3.jsonl"
+            path.write_text(
+                '{"role":"user","message":{"content":[{"type":"text",'
+                '"text":"<user_info>hidden</user_info>"}]}}\n'
+                '{"role":"assistant","message":{"content":['
+                '{"type":"future_block","value":"ignored"},'
+                '{"type":"text","text":"Done"}]}}\n'
+                '{"partial":'
+            )
+
+            _, stats, entries, _ = parse_cursor_session(path, set(), False)
+
+            self.assertEqual(stats["user_turns"], 0)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(entries, [("assistant", "Done")])
 
 
 class PiSessionTests(unittest.TestCase):

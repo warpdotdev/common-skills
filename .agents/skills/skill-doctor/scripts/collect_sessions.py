@@ -36,6 +36,20 @@ TRANSCRIPT_TAIL = 40
 CODE_EDIT_HINTS = ("apply_patch", "*** Begin Patch", "edit_file", "create_file", "str_replace", "write_file")
 CLAUDE_CODE_EDIT_TOOLS = {"Edit", "MultiEdit", "NotebookEdit", "Write"}
 GENERIC_EDIT_TOOLS = {"edit", "write", "apply_patch", "edit_file", "write_file", "str_replace", "search_replace"}
+CURSOR_EDIT_TOOLS = {"ApplyPatch", "EditNotebook"}
+CURSOR_QUERY_RE = re.compile(
+    r"<user_query>\s*(.*?)\s*</user_query>",
+    re.DOTALL,
+)
+CURSOR_TIMESTAMP_RE = re.compile(
+    r"<timestamp>[^,]+,\s+"
+    r"([A-Z][a-z]{2} \d{1,2}, \d{4}, \d{1,2}:\d{2} [AP]M) "
+    r"\(UTC([+-]\d{1,2})(?::(\d{2}))?\)</timestamp>"
+)
+CURSOR_ATTACHED_SKILL_RE = re.compile(
+    r"^Skill Name:\s*([^\n]+)$",
+    re.MULTILINE,
+)
 
 
 def parse_args():
@@ -244,6 +258,72 @@ def extract_text(content) -> str:
     return "\n".join(parts)
 
 
+def detect_skill_candidates(text: str):
+    """Extract possible installed-skill names from one tool argument payload."""
+    normalized = text.replace("\\", "/")
+    candidates = set(re.findall(r"(?:^|/)skills/+([^/]+)/+", normalized))
+    candidates.update(re.findall(
+        r'"(?:skill|name|bundled_skill_id)"\s*:\s*"([^"]+)"',
+        normalized,
+    ))
+    return candidates
+
+
+def parse_cursor_prompt_timestamp(text):
+    match = CURSOR_TIMESTAMP_RE.search(text)
+    if not match:
+        return None
+    local_time, hour_text, minute_text = match.groups()
+    offset_hours = int(hour_text)
+    offset_minutes = int(minute_text or "0")
+    if offset_hours < 0:
+        offset_minutes = -offset_minutes
+    tz = timezone(timedelta(hours=offset_hours, minutes=offset_minutes))
+    try:
+        parsed = datetime.strptime(
+            local_time,
+            "%b %d, %Y, %I:%M %p",
+        )
+    except ValueError:
+        return None
+    return parsed.replace(tzinfo=tz).isoformat()
+
+
+def extract_cursor_user_payload(text):
+    attached_skills = set(
+        name.strip()
+        for name in CURSOR_ATTACHED_SKILL_RE.findall(text)
+        if name.strip()
+    )
+    attached_skills.update(detect_skill_candidates(text))
+    timestamp = parse_cursor_prompt_timestamp(text)
+    query = CURSOR_QUERY_RE.search(text)
+    if query:
+        return query.group(1).strip(), timestamp, attached_skills
+    if looks_injected(text):
+        return "", timestamp, attached_skills
+    return text.strip(), timestamp, attached_skills
+
+
+def cursor_cwd_from_tool_input(value):
+    if not isinstance(value, dict):
+        return None
+    for key in ("working_directory", "cwd", "target_directory"):
+        candidate = value.get(key)
+        if isinstance(candidate, str) and os.path.isabs(candidate):
+            return candidate
+    for key in ("path", "file_path"):
+        candidate = value.get(key)
+        if not isinstance(candidate, str) or not os.path.isabs(candidate):
+            continue
+        path = Path(candidate)
+        return str(path if path.is_dir() else path.parent)
+    nested = value.get("arguments")
+    if isinstance(nested, dict):
+        return cursor_cwd_from_tool_input(nested)
+    return None
+
+
 def iter_jsonl_records(path: Path):
     """Yield every valid JSON object without loading the whole file."""
     stream = path.open("r", encoding="utf-8", errors="replace")
@@ -284,17 +364,6 @@ class TranscriptBuffer:
         return self._entries + [
             ("note", f"[... {omitted} entries omitted ...]")
         ] + list(self._tail)
-
-
-def detect_skill_candidates(text: str):
-    """Extract possible installed-skill names from one tool argument payload."""
-    normalized = text.replace("\\", "/")
-    candidates = set(re.findall(r"(?:^|/)skills/+([^/]+)/+", normalized))
-    candidates.update(re.findall(
-        r'"(?:skill|name|bundled_skill_id)"\s*:\s*"([^"]+)"',
-        normalized,
-    ))
-    return candidates
 
 
 def parse_claude_session(path: Path, skill_names, include_subagents: bool):
@@ -429,6 +498,162 @@ def parse_claude_session(path: Path, skill_names, include_subagents: bool):
         or has_code_edit_hint
     )
     return meta, stats, entries.finish(), sorted(skills_used)
+
+
+def parse_cursor_session(
+    path: Path,
+    skill_names,
+    include_subagents: bool,
+    workspace_hint=None,
+):
+    """Normalize one Cursor Agent JSONL transcript."""
+    is_subagent = path.parent.name == "subagents"
+    if is_subagent and not include_subagents:
+        return None
+    try:
+        records = iter_jsonl_records(path)
+        modified_at = datetime.fromtimestamp(
+            path.stat().st_mtime,
+            tz=timezone.utc,
+        ).isoformat()
+    except OSError:
+        return None
+
+    meta = {
+        "id": path.stem,
+        "cwd": str(workspace_hint) if workspace_hint else None,
+        "started_at": None,
+        "originator": "cursor",
+        "thread_source": "subagent" if is_subagent else None,
+    }
+    stats = {
+        "user_turns": 0,
+        "assistant_turns": 0,
+        "tool_calls": 0,
+        "repeated_tool_calls": 0,
+        "error_outputs": 0,
+    }
+    entries = TranscriptBuffer()
+    seen_calls = {}
+    skills_used = set()
+    used_tool_names = set()
+    has_code_edit_hint = False
+    first_ts = last_ts = None
+
+    for obj in records:
+        if not isinstance(obj, dict):
+            continue
+        message = obj.get("message") or {}
+        if not isinstance(message, dict):
+            continue
+        role = obj.get("role") or message.get("role")
+        record_ts = obj.get("timestamp") or message.get("timestamp")
+        if isinstance(record_ts, str):
+            first_ts = first_ts or record_ts
+            last_ts = record_ts
+        content = message.get("content")
+        blocks = content if isinstance(content, list) else [
+            {"type": "text", "text": content}
+        ]
+        has_user_text = False
+        has_assistant_content = False
+
+        for block in blocks:
+            if not isinstance(block, dict):
+                continue
+            block_type = block.get("type")
+            if block_type == "text":
+                text = block.get("text")
+                if not isinstance(text, str) or not text:
+                    continue
+                if role == "user":
+                    visible, prompt_ts, attached = extract_cursor_user_payload(
+                        text
+                    )
+                    skills_used.update(attached)
+                    if prompt_ts:
+                        first_ts = first_ts or prompt_ts
+                        last_ts = prompt_ts
+                    if visible:
+                        has_user_text = True
+                        entries.append((
+                            "user",
+                            truncate(visible, MAX_MSG_CHARS),
+                        ))
+                elif role == "assistant" and not looks_injected(text):
+                    has_assistant_content = True
+                    entries.append((
+                        "assistant",
+                        truncate(text, MAX_MSG_CHARS),
+                    ))
+            elif block_type == "tool_use":
+                has_assistant_content = True
+                stats["tool_calls"] += 1
+                name = str(block.get("name") or "unknown")
+                args = block.get("input") or {}
+                args_text = (
+                    args
+                    if isinstance(args, str)
+                    else json.dumps(args, ensure_ascii=False, sort_keys=True)
+                )
+                key = hashlib.sha1((name + args_text).encode()).hexdigest()
+                seen_calls[key] = seen_calls.get(key, 0) + 1
+                if seen_calls[key] > 1:
+                    stats["repeated_tool_calls"] += 1
+                used_tool_names.add(name)
+                skills_used.update(detect_skill_candidates(args_text))
+                has_code_edit_hint = has_code_edit_hint or any(
+                    hint in args_text for hint in CODE_EDIT_HINTS
+                )
+                inferred_cwd = cursor_cwd_from_tool_input(args)
+                meta["cwd"] = meta.get("cwd") or inferred_cwd
+                entries.append((
+                    f"tool:{name}",
+                    truncate(args_text, MAX_TOOL_CHARS),
+                ))
+            elif block_type == "tool_result" or role in (
+                "tool",
+                "toolResult",
+            ):
+                result = extract_text(
+                    block.get("content") or block.get("text")
+                )
+                if not result:
+                    continue
+                low = result[:2000].lower()
+                if (
+                    block.get("is_error")
+                    or block.get("isError")
+                    or "error" in low
+                    or "failed" in low
+                    or "traceback" in low
+                ):
+                    stats["error_outputs"] += 1
+                entries.append((
+                    "output",
+                    truncate(result, MAX_TOOL_CHARS),
+                ))
+
+        if role == "user" and has_user_text:
+            stats["user_turns"] += 1
+        elif role == "assistant" and has_assistant_content:
+            stats["assistant_turns"] += 1
+
+    stats["first_ts"] = first_ts or modified_at
+    stats["last_ts"] = last_ts or modified_at
+    stats["has_code_edits"] = (
+        bool(used_tool_names & CURSOR_EDIT_TOOLS)
+        or bool(used_tool_names & GENERIC_EDIT_TOOLS)
+        or has_code_edit_hint
+    )
+    meta["started_at"] = stats["first_ts"]
+    installed = set(skill_names)
+    return (
+        meta,
+        stats,
+        entries.finish(),
+        sorted(skills_used & installed),
+    )
 
 
 def looks_injected(text: str) -> bool:
