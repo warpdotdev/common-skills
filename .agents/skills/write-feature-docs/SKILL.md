@@ -9,6 +9,14 @@ Draft a complete documentation page for a new Warp feature. You read the feature
 
 The engineer's job is to confirm what you couldn't verify from the spec and code — not to do a full accuracy review, not to polish prose, not to know docs conventions.
 
+## Load the docs checkout's guidance
+
+Before planning or drafting, locate or obtain a clean `warpdotdev/docs` checkout and read its `AGENTS.md`, `.agents/rules/warp-positioning.md`, `.agents/references/terminology.md`, `.agents/references/doc-quality-policy.md`, and `.agents/skills/draft_docs/SKILL.md`. Use a separate worktree for the docs task rather than switching a checkout with in-progress work. Read `.agents/references/writing-examples.md` when drafting explanatory copy, and the selected content-type skill and template before writing the page.
+
+Use those versioned sources for positioning, voice, names, evidence, and delivery requirements instead of a remembered or installed summary. If a required source is missing, pause dependent drafting and report the gap. Do not substitute the unmaintained Notion Dictionary or an old positioning filename.
+
+Apply the docs checkout's verification and rollout checks to technical claims. A spec establishes intent, not shipped behavior. Keep the interactive confirmations below; canonical guidance does not remove them.
+
 ## The workflow
 
 1. Find and read the spec files
@@ -217,39 +225,9 @@ Briefly explain why the user is doing this before telling them how.]
 
 ### Style rules — apply exactly
 
-These conventions come from the Warp docs style guide and must be followed:
+Apply the target docs checkout's `AGENTS.md` and selected drafting skill to headings, lists, UI labels, descriptions, variables, callouts, and voice. Check the opening and metadata against `.agents/rules/warp-positioning.md`, then verify names against `.agents/references/terminology.md`. Do not define Warp Factories or a customer's factory as a team of agents; keep literal shipped role names.
 
-**Headings**
-- Sentence case for all headings: capitalize only the first word and proper feature names
-- Proper feature names keep their capitalization: "Agent Mode", "Warp Drive", "Oz", "Command Palette"
-- ✅ `## How it works` — ❌ `## How It Works`
-- ✅ `## Agent Mode settings` — ❌ `## Agent mode settings`
-
-**Lists**
-- Bold term + dash + description: `* **Term** - Description`
-- Never use a colon: ❌ `* **Term**: Description`
-
-**UI elements and paths**
-- Bold for buttons, links, menu items: `Click **Save**`, not `` Click `Save` ``
-- Bold each segment in a Settings path, leave `>` plain: `**Settings** > **AI** > **Knowledge**`
-
-**Voice and tone**
-- Second person: "you can," "allows you to"
-- Active voice: "Warp indexes your codebase" — not "your codebase is indexed"
-- Avoid "simple," "easy," "just" — these dismiss the reader's experience
-- Present tense for how things work; imperative for instructions
-
-**Frontmatter description**
-- Write as a standalone summary that works as a search result snippet
-- Lead with user benefit, include the feature name and key terms
-- ✅ `Environments ensure your cloud agents run with a consistent toolchain. Learn when to use environments and how to configure them.`
-- ❌ `This page describes environments.`
-
-**Callout syntax** (Astro Starlight)
-- `:::note` — supplemental context, tips
-- `:::caution` — caveats, limitations
-- `:::danger` — destructive or irreversible actions
-- `:::tip` — helpful hints and best practices
+Run the selected drafting skill's validation before delivery, including the applicable build, style, technical-reference, and PR-contract checks. Record skipped or unavailable checks as such, not passes.
 
 **What to leave as `[TODO: docs reviewer — ...]` placeholders**
 - Screenshots where computer use fails the quality gate, is unavailable, or the feature isn't yet shipped
