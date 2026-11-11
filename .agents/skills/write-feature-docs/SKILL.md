@@ -209,7 +209,7 @@ Briefly explain why the user is doing this before telling them how.]
 
 ### Prerequisites
 
-* **[Prerequisite]** - What it is and where to get it. See [full reference](link-here).
+* [Required access, tool, or credential, with where to get it and a link to its full reference.]
 
 ### [Task name — sentence case, e.g., "Create an environment with the CLI"]
 
