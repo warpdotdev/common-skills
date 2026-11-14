@@ -9,6 +9,7 @@ This file is the single source of truth for harness support in `skill-doctor`. R
 | Warp | `warp` | Read-only Warp conversation databases |
 | Claude Code | `claude` | Project-history JSONL |
 | Codex | `codex` | Rollout JSONL |
+| Cursor | `cursor` | Cursor Agent transcript JSONL |
 | Pi | `pi` | Pi agent JSONL (`~/.pi/agent/sessions`) |
 | Grok Build | `grok` | Grok Build chat_history JSONL (`~/.grok/sessions`) |
 | ZCode | `zcode` | ZCode model-io rollout (`~/.zcode/cli/rollout`) |
@@ -18,7 +19,7 @@ At startup, identify the harness executing the skill from the runtime context. D
 
 If the executing harness is not listed above, or cannot be identified confidently, stop before creating a report directory or reading conversation history. Tell the user:
 
-> skill-doctor currently supports Warp, Claude Code, Codex, Pi, Grok Build, ZCode, and Hermes. This run appears to be using an unsupported harness, so no conversations were read.
+> skill-doctor currently supports Warp, Claude Code, Codex, Cursor, Pi, Grok Build, ZCode, and Hermes. This run appears to be using an unsupported harness, so no conversations were read.
 
 ## Collector source selection
 
@@ -31,12 +32,20 @@ Harness-specific source overrides:
 
 - `--claude-home PATH` — nonstandard Claude Code configuration directory.
 - `--codex-home PATH` — nonstandard Codex home.
+- `--cursor-home PATH` — nonstandard Cursor home (default `CURSOR_HOME` or `~/.cursor`).
+- `--cursor-transcript PATH` — explicit Cursor transcript JSONL; repeatable.
 - `--warp-db PATH` — explicit Warp database; repeatable.
 - `--warp-data-dir PATH` — nonstandard Warp channel-data directory.
 - `--pi-home PATH` — nonstandard Pi agent home (default `~/.pi/agent`).
 - `--grok-home PATH` — nonstandard Grok Build home (default `~/.grok`).
 - `--zcode-home PATH` — nonstandard ZCode home (default `~/.zcode`).
 - `--hermes-home PATH` — Hermes Agent home containing `state.db` (default discovery checks `HERMES_HOME`, `~/.hermes`, then `~`).
+
+Cursor hooks document a JSONL transcript path, but Cursor does not document
+the historical `~/.cursor/projects` layout or persisted record schema as a
+stable API. Historical discovery is best-effort. Explicit transcript paths
+are preferred when a hook provides them. Persisted transcripts contain tool
+calls but no tool results, so Cursor sessions report no tool errors.
 
 ## Skill locations
 
@@ -45,5 +54,6 @@ Project skills are discovered from:
 - `.agents/skills`
 - `.claude/skills`
 - `.codex/skills`
+- `.cursor/skills`
 
-Global skills are discovered from the corresponding directories under the user's home and configured harness homes when `--include-global-skills` is set: `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`, Pi's skill directory under its agent home (default `~/.pi/agent/skills`), Grok Build's `~/.grok/skills`, and ZCode's `~/.zcode/skills`.
+Global skills are discovered from the corresponding directories under the user's home and configured harness homes when `--include-global-skills` is set: `~/.claude/skills`, `~/.agents/skills`, `~/.codex/skills`, `~/.cursor/skills`, Pi's skill directory under its agent home (default `~/.pi/agent/skills`), Grok Build's `~/.grok/skills`, and ZCode's `~/.zcode/skills`.

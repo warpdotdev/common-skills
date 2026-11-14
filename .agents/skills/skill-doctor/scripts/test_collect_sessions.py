@@ -3,26 +3,38 @@
 
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import unittest
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from unittest import mock
 
 from collect_sessions import (
+    cursor_project_key,
+    cursor_workspace_hint,
+    decode_cursor_project_key,
     detect_skills_from_entries,
     discover_hermes_databases,
     discover_skills,
     find_claude_session_files,
+    find_cursor_session_files,
     find_grok_session_files,
     find_hermes_sessions,
     find_pi_session_files,
+    git_root_for_directory,
+    infer_session_repos,
     parse_claude_session,
     parse_codex_session,
+    parse_cursor_session,
     parse_grok_session,
     parse_hermes_session,
     parse_pi_session,
     parse_zcode_session,
     resolve_hermes_home,
+    session_meta_matches_repos,
+    session_recency,
     session_matches_repos,
 )
 
@@ -46,6 +58,26 @@ def write_jsonl_past_previous_limit(path, first_record, last_records):
 
 
 class ClaudeSessionTests(unittest.TestCase):
+    def test_all_conversations_infers_repo_without_rewriting_non_cursor_cwd(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            subdirectory = repo / "src" / "nested"
+            subdirectory.mkdir(parents=True)
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            original_cwd = str(subdirectory)
+            sessions = [{
+                "harness": "claude",
+                "meta": {"cwd": original_cwd},
+            }]
+            git_root_for_directory.cache_clear()
+
+            repos = infer_session_repos(sessions)
+
+            self.assertEqual(repos, [repo.resolve()])
+            self.assertEqual(sessions[0]["meta"]["cwd"], original_cwd)
+            git_root_for_directory.cache_clear()
+
     def test_discovers_skills_and_matches_sessions_across_projects(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -61,6 +93,7 @@ class ClaudeSessionTests(unittest.TestCase):
             skills = discover_skills(
                 [first, second],
                 root / "codex-home",
+                None,
                 [],
                 False,
             )
@@ -78,7 +111,7 @@ class ClaudeSessionTests(unittest.TestCase):
             root = Path(tmp)
             homes = {
                 name: root / f"{name}-home"
-                for name in ("codex", "pi", "grok", "zcode", "hermes")
+                for name in ("codex", "cursor", "pi", "grok", "zcode", "hermes")
             }
             for name, home in homes.items():
                 skill = home / "skills" / f"{name}-skill" / "SKILL.md"
@@ -88,6 +121,7 @@ class ClaudeSessionTests(unittest.TestCase):
             skills = discover_skills(
                 [],
                 homes["codex"],
+                homes["cursor"],
                 [],
                 True,
                 pi_home=homes["pi"],
@@ -99,6 +133,7 @@ class ClaudeSessionTests(unittest.TestCase):
             self.assertTrue(
                 {
                     "codex-skill",
+                    "cursor-skill",
                     "pi-skill",
                     "grok-skill",
                     "zcode-skill",
@@ -246,6 +281,380 @@ class ClaudeSessionTests(unittest.TestCase):
             parsed = parse_claude_session(path, set(), True)
             self.assertEqual(parsed[0]["id"], "session-1-child-1")
             self.assertEqual(parsed[0]["thread_source"], "subagent")
+
+
+class CursorSessionTests(unittest.TestCase):
+    def test_git_root_resolution_caches_normalized_directories(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            clear_cache = getattr(
+                git_root_for_directory,
+                "cache_clear",
+                lambda: None,
+            )
+            clear_cache()
+            equivalent_repo = repo / ".." / repo.name
+
+            with mock.patch(
+                "collect_sessions.subprocess.run",
+                wraps=subprocess.run,
+            ) as run:
+                first = git_root_for_directory(repo)
+                second = git_root_for_directory(equivalent_repo)
+
+            self.assertEqual(first, str(repo.resolve()))
+            self.assertEqual(second, first)
+            self.assertEqual(run.call_count, 1)
+            self.assertTrue(callable(
+                getattr(git_root_for_directory, "cache_clear", None)
+            ))
+            git_root_for_directory.cache_clear()
+
+    def test_selected_repo_exclusion_does_not_probe_git_roots(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            selected = root / "selected"
+            excluded = root / "excluded"
+            selected.mkdir()
+            excluded.mkdir()
+            path = root / "excluded-session.jsonl"
+            write_jsonl(path, [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect another repository"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {
+                                "command": "pwd",
+                                "working_directory": str(excluded),
+                            },
+                        }]
+                    },
+                },
+            ])
+
+            with mock.patch("collect_sessions.subprocess.run") as run:
+                parsed = parse_cursor_session(path, set(), False)
+                in_scope = session_meta_matches_repos(
+                    parsed[0],
+                    [selected.resolve()],
+                )
+
+            self.assertFalse(in_scope)
+            run.assert_not_called()
+
+    def test_parses_wrapped_query_tools_attached_skills_and_timestamp(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-1.jsonl"
+            write_jsonl(path, [
+                {
+                    "role": "user",
+                    "message": {
+                        "content": [{
+                            "type": "text",
+                            "text": (
+                                "<manually_attached_skills>\n"
+                                "Skill Name: attached-skill\n"
+                                "Path: /tmp/.cursor/skills/attached-skill/SKILL.md\n"
+                                "</manually_attached_skills>\n"
+                                "<timestamp>Monday, Nov 9, 2026, 1:02 PM (UTC-5)</timestamp>\n"
+                                "<user_query>\nFix the collector\n</user_query>"
+                            ),
+                        }]
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {"type": "text", "text": "I will inspect it."},
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {
+                                    "path": "/repo/.agents/skills/read-skill/SKILL.md"
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "ApplyPatch",
+                                "input": {"patch": "*** Begin Patch"},
+                            },
+                        ]
+                    },
+                },
+            ])
+
+            meta, stats, entries, skills = parse_cursor_session(
+                path,
+                {"attached-skill", "read-skill"},
+                False,
+                workspace_hint="/repo",
+            )
+
+            self.assertEqual(meta["id"], "session-1")
+            self.assertEqual(meta["cwd"], "/repo")
+            self.assertEqual(meta["originator"], "cursor")
+            self.assertEqual(meta["thread_source"], None)
+            self.assertEqual(stats["user_turns"], 1)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(stats["tool_calls"], 2)
+            self.assertEqual(stats["repeated_tool_calls"], 0)
+            self.assertTrue(stats["has_code_edits"])
+            self.assertEqual(
+                stats["first_ts"],
+                "2026-11-09T13:02:00-05:00",
+            )
+            self.assertEqual(skills, ["attached-skill", "read-skill"])
+            self.assertIn(("user", "Fix the collector"), entries)
+            self.assertIn(("assistant", "I will inspect it."), entries)
+            self.assertNotIn("manually_attached_skills", json.dumps(entries))
+
+    def test_counts_repeated_calls_and_optional_tool_errors(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-2.jsonl"
+            tool = {
+                "type": "tool_use",
+                "name": "Shell",
+                "input": {"command": "false", "working_directory": "/tmp/repo"},
+            }
+            write_jsonl(path, [
+                {
+                    "role": "user",
+                    "message": {"content": [{"type": "text", "text": "Run it"}]},
+                },
+                {
+                    "role": "assistant",
+                    "message": {"content": [tool, tool]},
+                },
+                {
+                    "role": "tool",
+                    "message": {
+                        "content": [{
+                            "type": "tool_result",
+                            "is_error": True,
+                            "content": "command failed",
+                        }]
+                    },
+                },
+            ])
+
+            meta, stats, entries, skills = parse_cursor_session(
+                path, set(), False
+            )
+
+            self.assertEqual(meta["cwd"], "/tmp/repo")
+            self.assertEqual(stats["tool_calls"], 2)
+            self.assertEqual(stats["repeated_tool_calls"], 1)
+            self.assertEqual(stats["error_outputs"], 1)
+            self.assertIn(("output", "command failed"), entries)
+            self.assertEqual(skills, [])
+
+    def test_ignores_malformed_lines_unknown_blocks_and_injected_text(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-3.jsonl"
+            path.write_text(
+                '{"role":"user","message":{"content":[{"type":"text",'
+                '"text":"<user_info>hidden</user_info>"}]}}\n'
+                '{"role":"assistant","message":{"content":['
+                '{"type":"future_block","value":"ignored"},'
+                '{"type":"text","text":"Done"}]}}\n'
+                '{"partial":'
+            )
+
+            _, stats, entries, _ = parse_cursor_session(path, set(), False)
+
+            self.assertEqual(stats["user_turns"], 0)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(entries, [("assistant", "Done")])
+
+    def test_does_not_credit_skill_path_mentioned_in_user_query(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "session-query-skill.jsonl"
+            write_jsonl(path, [{
+                "role": "user",
+                "message": {
+                    "content": [{
+                        "type": "text",
+                        "text": (
+                            "<user_query>Review "
+                            "/repo/.agents/skills/example/SKILL.md"
+                            "</user_query>"
+                        ),
+                    }]
+                },
+            }])
+
+            _, _, entries, skills = parse_cursor_session(
+                path, {"example"}, False
+            )
+
+            self.assertEqual(skills, [])
+            self.assertIn(
+                ("user", "Review /repo/.agents/skills/example/SKILL.md"),
+                entries,
+            )
+
+    def test_returns_none_for_nested_subagent_unless_included(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "parent-1" / "subagents" / "child-1.jsonl"
+            write_jsonl(path, [{"role": "user"}])
+
+            self.assertIsNone(parse_cursor_session(path, set(), False))
+            parsed = parse_cursor_session(path, set(), True)
+            self.assertIsNotNone(parsed)
+            self.assertEqual(parsed[0]["thread_source"], "subagent")
+
+    def test_discovers_parents_and_optional_subagents(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cursor_home = Path(tmp)
+            transcript_root = (
+                cursor_home
+                / "projects"
+                / "tmp-repo"
+                / "agent-transcripts"
+                / "parent-1"
+            )
+            parent = transcript_root / "parent-1.jsonl"
+            child = transcript_root / "subagents" / "child-1.jsonl"
+            old = (
+                cursor_home
+                / "projects"
+                / "tmp-repo"
+                / "agent-transcripts"
+                / "old"
+                / "old.jsonl"
+            )
+            for transcript in (parent, child, old):
+                write_jsonl(transcript, [{"role": "user"}])
+            old_time = (
+                datetime.now(timezone.utc) - timedelta(days=10)
+            ).timestamp()
+            os.utime(old, (old_time, old_time))
+            cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+            parents = find_cursor_session_files(
+                cursor_home, cutoff, False, []
+            )
+            with_children = find_cursor_session_files(
+                cursor_home, cutoff, True, []
+            )
+
+            self.assertEqual([path for _, path in parents], [parent])
+            self.assertEqual(
+                {path for _, path in with_children},
+                {parent, child},
+            )
+
+    def test_deduplicates_explicit_and_discovered_transcripts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            cursor_home = Path(tmp)
+            transcript = (
+                cursor_home
+                / "projects"
+                / "tmp-repo"
+                / "agent-transcripts"
+                / "parent-1"
+                / "parent-1.jsonl"
+            )
+            write_jsonl(transcript, [{"role": "user"}])
+            cutoff = datetime.now(timezone.utc) - timedelta(days=1)
+
+            files = find_cursor_session_files(
+                cursor_home,
+                cutoff,
+                False,
+                [str(transcript)],
+            )
+
+            self.assertEqual([path for _, path in files], [transcript])
+
+    def test_matches_selected_repo_without_decoding_project_name(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / ".cursor"
+            repo = root / "repo-with-hyphens"
+            repo.mkdir()
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "parent-1"
+                / "parent-1.jsonl"
+            )
+            write_jsonl(transcript, [{"role": "user"}])
+
+            hint = cursor_workspace_hint(
+                transcript,
+                [repo],
+                cursor_home,
+            )
+
+            self.assertEqual(hint, repo.resolve())
+
+    def test_encodes_dot_in_repository_path_as_hyphen(self):
+        repo = Path("/Users/ada.lovelace/src/sample-repo")
+        self.assertEqual(
+            cursor_project_key(repo),
+            "Users-ada-lovelace-src-sample-repo",
+        )
+
+    def test_collapses_separator_runs_like_cursor(self):
+        # Observed: ~/.herdr/worktrees/... -> Users-<user>-herdr-worktrees-...
+        repo = Path("/Users/ada.lovelace/.herdr/worktrees/repo__x")
+        self.assertEqual(
+            cursor_project_key(repo),
+            "Users-ada-lovelace-herdr-worktrees-repo-x",
+        )
+
+    def test_decodes_project_key_by_walking_filesystem(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            target = root / "a.b" / "my-repo"
+            target.mkdir(parents=True)
+            (root / "a-b-my").mkdir()  # shares a prefix, wrong branch
+            self.assertEqual(
+                decode_cursor_project_key("a-b-my-repo", str(root)),
+                str(target.resolve()),
+            )
+            self.assertIsNone(
+                decode_cursor_project_key("a-b-gone", str(root))
+            )
+
+    def test_marks_code_edits_for_cursor_edit_tools(self):
+        for tool in ("StrReplace", "Write", "Delete", "ApplyPatch"):
+            with self.subTest(tool=tool), tempfile.TemporaryDirectory() as tmp:
+                transcript = Path(tmp) / "s" / "s.jsonl"
+                write_jsonl(transcript, [
+                    {"role": "user", "message": {"content": "edit it"}},
+                    {"role": "assistant", "message": {"content": [{
+                        "type": "tool_use",
+                        "name": tool,
+                        "input": {"path": "/tmp/x.py", "contents": "y"},
+                    }]}},
+                ])
+                _, stats, _, _ = parse_cursor_session(transcript, [], False)
+                self.assertTrue(stats["has_code_edits"])
+
+    def test_discovers_project_cursor_skills(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            repo = Path(tmp) / "repo"
+            skill = repo / ".cursor" / "skills" / "cursor-project" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Cursor project skill\n---\n")
+
+            skills = discover_skills([repo], Path(tmp) / "codex", None, [], False)
+
+            self.assertIn("cursor-project", skills)
 
 
 class PiSessionTests(unittest.TestCase):
@@ -904,6 +1313,543 @@ class HermesCollectorTests(unittest.TestCase):
                     os.environ["HERMES_HOME"] = old_hermes_home
 
             self.assertEqual(resolved, dot_hermes.resolve())
+
+
+class SamplingOrderTests(unittest.TestCase):
+    def test_recency_uses_last_activity_not_file_mtime(self):
+        touched_old = {
+            "modified_at": "2026-11-09T22:00:00+00:00",
+            "stats": {"last_ts": "2026-10-23T14:17:00Z"},
+        }
+        recent = {
+            "modified_at": "2026-11-09T17:00:00+00:00",
+            "stats": {"last_ts": "2026-11-09T11:59:00-05:00"},
+        }
+        epoch_ms = {
+            "modified_at": "2026-11-09T22:00:00+00:00",
+            "stats": {"last_ts": 1762646400000},  # 2025-11-09T00:00Z
+        }
+        no_activity = {"modified_at": "2026-11-01T00:00:00+00:00", "stats": {}}
+
+        ordered = sorted(
+            [touched_old, epoch_ms, no_activity, recent],
+            key=session_recency,
+            reverse=True,
+        )
+
+        self.assertEqual(ordered, [recent, no_activity, touched_old, epoch_ms])
+
+
+class CursorCollectorIntegrationTests(unittest.TestCase):
+    def run_collector(self, *args):
+        script = Path(__file__).with_name("collect_sessions.py")
+        return subprocess.run(
+            [sys.executable, str(script), *map(str, args)],
+            capture_output=True,
+            text=True,
+        )
+
+    def test_main_writes_cursor_inventory_and_condensed_transcript(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "sample-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            skill = repo / ".agents" / "skills" / "sample-skill" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text(
+                "---\nname: sample-skill\ndescription: Test skill\n---\n"
+            )
+
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "session-1"
+                / "session-1.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {
+                        "content": [{
+                            "type": "text",
+                            "text": "<user_query>Use the skill</user_query>",
+                        }]
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "ReadFile",
+                            "input": {"path": str(skill)},
+                        }]
+                    },
+                },
+            ])
+            out = root / "report"
+            script = Path(__file__).with_name("collect_sessions.py")
+
+            result = subprocess.run(
+                [
+                    sys.executable,
+                    str(script),
+                    "--harness",
+                    "cursor",
+                    "--cursor-home",
+                    str(cursor_home),
+                    "--repo",
+                    str(repo),
+                    "--out",
+                    str(out),
+                ],
+                capture_output=True,
+                text=True,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["harness"], "cursor")
+            self.assertEqual(inventory["cursor_home"], str(cursor_home))
+            self.assertEqual(inventory["stats"]["sessions_sampled"], 1)
+            self.assertEqual(inventory["skill_usage"]["sample-skill"], 1)
+            rendered = next((out / "transcripts").glob("*.md")).read_text()
+            self.assertIn("[user] Use the skill", rendered)
+            self.assertIn("skills detected: sample-skill", rendered)
+
+    def test_inventory_omits_internal_cursor_candidates(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "sample-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "session-internal"
+                / "session-internal.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect the repository"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {
+                                "command": "git status",
+                                "working_directory": str(repo),
+                            },
+                        }]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--repo", repo,
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            meta = inventory["sessions"][0]["meta"]
+            self.assertNotIn("cwd_candidates", meta)
+            self.assertNotIn("_cwd_candidates", meta)
+
+    def test_selected_repo_accepts_any_tool_derived_candidate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "selected-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "nonstandard-project-key"
+                / "agent-transcripts"
+                / "session-selected"
+                / "session-selected.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect the repository"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {
+                                    "path": str(
+                                        cursor_home
+                                        / "skills"
+                                        / "global"
+                                        / "SKILL.md"
+                                    ),
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {"path": str(repo / "README.md")},
+                            },
+                        ]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--repo", repo,
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["stats"]["sessions_considered"], 1)
+
+    def test_all_conversations_infers_repo_after_global_skill_path(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "inferred-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            skill = (
+                repo / ".agents" / "skills" / "project-skill" / "SKILL.md"
+            )
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Project skill\n---\n")
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "opaque-key"
+                / "agent-transcripts"
+                / "session-all"
+                / "session-all.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {"content": "Use the project skill"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {
+                                    "path": str(
+                                        cursor_home
+                                        / "skills"
+                                        / "global-skill"
+                                        / "SKILL.md"
+                                    ),
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "Shell",
+                                "input": {
+                                    "command": "git status",
+                                    "working_directory": str(repo),
+                                },
+                            },
+                            {
+                                "type": "tool_use",
+                                "name": "ReadFile",
+                                "input": {"path": str(skill)},
+                            },
+                        ]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--all-conversations",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["repos"], [str(repo.resolve())])
+            self.assertEqual(inventory["skill_usage"]["project-skill"], 1)
+
+    def test_all_conversations_credits_attached_project_skill(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "attached-repo"
+            repo.mkdir()
+            subprocess.run(["git", "init", "-q", str(repo)], check=True)
+            skill = (
+                repo / ".agents" / "skills" / "attached-project" / "SKILL.md"
+            )
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Attached project skill\n---\n")
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / "opaque-key"
+                / "agent-transcripts"
+                / "session-attached"
+                / "session-attached.jsonl"
+            )
+            write_jsonl(transcript, [
+                {
+                    "role": "user",
+                    "message": {
+                        "content": (
+                            "<manually_attached_skills>\n"
+                            "Skill Name: attached-project\n"
+                            f"Path: {skill}\n"
+                            "</manually_attached_skills>\n"
+                            "<user_query>Use the attached skill</user_query>"
+                        )
+                    },
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {
+                                "command": "git status",
+                                "working_directory": str(repo),
+                            },
+                        }]
+                    },
+                },
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--all-conversations",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(
+                inventory["skill_usage"]["attached-project"],
+                1,
+            )
+
+    def test_all_conversations_uses_project_key_workspace_and_one_repo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "work.space" / "main-repo"
+            other = root / "plugin-cache"
+            for path in (repo, other):
+                path.mkdir(parents=True)
+                subprocess.run(["git", "init", "-q", str(path)], check=True)
+            other_skill = other / ".agents" / "skills" / "cache-skill" / "SKILL.md"
+            other_skill.parent.mkdir(parents=True)
+            other_skill.write_text("---\ndescription: Cache skill\n---\n")
+            cursor_home = root / "cursor-home"
+            transcript = (
+                cursor_home
+                / "projects"
+                / cursor_project_key(repo)
+                / "agent-transcripts"
+                / "session-key"
+                / "session-key.jsonl"
+            )
+            # The first file read is in another git repo; the project key
+            # names main-repo, which no tool call uses as a directory.
+            write_jsonl(transcript, [
+                {"role": "user", "message": {"content": "Look around"}},
+                {"role": "assistant", "message": {"content": [
+                    {
+                        "type": "tool_use",
+                        "name": "ReadFile",
+                        "input": {"path": str(other_skill)},
+                    },
+                    {
+                        "type": "tool_use",
+                        "name": "ReadFile",
+                        "input": {"path": str(repo / "src" / "app.py")},
+                    },
+                ]}},
+            ])
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--all-conversations",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(inventory["repos"], [str(repo.resolve())])
+            self.assertNotIn("cache-skill", inventory["skill_usage"])
+
+    def test_cursor_source_exists_with_zero_recent_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor-home"
+            old = (
+                cursor_home
+                / "projects"
+                / "opaque-key"
+                / "agent-transcripts"
+                / "old"
+                / "old.jsonl"
+            )
+            write_jsonl(old, [{"role": "user", "message": {"content": "old"}}])
+            old_time = (
+                datetime.now(timezone.utc) - timedelta(days=10)
+            ).timestamp()
+            os.utime(old, (old_time, old_time))
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--days", "1",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            self.assertEqual(
+                inventory["sources"]["cursor"]["records_in_window"],
+                0,
+            )
+            self.assertEqual(inventory["stats"]["sessions_considered"], 0)
+
+    def test_zero_limits_sample_every_scoreable_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor-home"
+            skill = cursor_home / "skills" / "busy-skill" / "SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("---\ndescription: Busy skill\n---\n")
+            # Five sessions that use the same skill, and five that use none.
+            for index in range(10):
+                tool_input = (
+                    {"path": str(skill)} if index < 5 else {"path": "/tmp/x"}
+                )
+                write_jsonl(
+                    cursor_home / "projects" / "key" / "agent-transcripts"
+                    / f"s{index}" / f"s{index}.jsonl",
+                    [
+                        {"role": "user", "message": {"content": "go"}},
+                        {"role": "assistant", "message": {"content": [{
+                            "type": "tool_use",
+                            "name": "ReadFile",
+                            "input": tool_input,
+                        }]}},
+                    ],
+                )
+
+            def sampled(*limits):
+                out = root / f"report-{len(limits)}"
+                result = self.run_collector(
+                    "--harness", "cursor",
+                    "--cursor-home", cursor_home,
+                    "--all-conversations",
+                    "--include-global-skills",
+                    "--out", out,
+                    *limits,
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                inventory = json.loads((out / "inventory.json").read_text())
+                return inventory["stats"]["sessions_sampled"]
+
+            # Defaults: 3 for the skill + 4 with no skill.
+            self.assertEqual(sampled(), 7)
+            self.assertEqual(
+                sampled(
+                    "--max-sessions", "0",
+                    "--per-skill", "0",
+                    "--no-skill", "0",
+                ),
+                10,
+            )
+
+    def test_explicit_transcripts_warn_and_report_requested_and_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cursor_home = root / "cursor-home"
+            accepted = root / "accepted.jsonl"
+            old = root / "old.jsonl"
+            missing = root / "missing.jsonl"
+            unreadable = root / "not-a-file.jsonl"
+            unreadable.mkdir()
+            records = [
+                {
+                    "role": "user",
+                    "message": {"content": "Inspect this"},
+                },
+                {
+                    "role": "assistant",
+                    "message": {
+                        "content": [{
+                            "type": "tool_use",
+                            "name": "Shell",
+                            "input": {"command": "pwd"},
+                        }]
+                    },
+                },
+            ]
+            write_jsonl(accepted, records)
+            write_jsonl(old, records)
+            old_time = (
+                datetime.now(timezone.utc) - timedelta(days=10)
+            ).timestamp()
+            os.utime(old, (old_time, old_time))
+            out = root / "report"
+
+            result = self.run_collector(
+                "--harness", "cursor",
+                "--cursor-home", cursor_home,
+                "--cursor-transcript", accepted,
+                "--cursor-transcript", old,
+                "--cursor-transcript", missing,
+                "--cursor-transcript", unreadable,
+                "--all-conversations",
+                "--days", "1",
+                "--out", out,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for rejected in (old, missing, unreadable):
+                self.assertIn(str(rejected), result.stderr)
+            inventory = json.loads((out / "inventory.json").read_text())
+            source = inventory["sources"]["cursor"]
+            self.assertEqual(source["explicit_transcripts_requested"], 4)
+            self.assertEqual(source["explicit_transcripts_accepted"], 1)
 
 
 if __name__ == "__main__":
