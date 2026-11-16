@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Collect local Claude Code, Codex, Warp, Pi, Grok Build, and ZCode sessions and skills for scoring.
+"""Collect local Claude Code, Codex, Warp, Pi, Grok Build, ZCode, Hermes, and OpenCode sessions and skills for scoring.
 
 Scans Claude Code project history, Codex rollout files, Warp's local
 conversation databases, Pi agent session JSONL, Grok Build chat history,
@@ -42,7 +42,7 @@ def parse_args():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument(
         "--harness",
-        choices=("auto", "all", "claude", "codex", "warp", "pi", "grok", "zcode", "hermes"),
+        choices=("auto", "all", "claude", "codex", "warp", "pi", "grok", "zcode", "hermes", "opencode"),
         default="auto",
         help="session source (default: auto; scans every locally available source)",
     )
@@ -73,6 +73,12 @@ def parse_args():
         help="Hermes Agent home containing state.db (default: HERMES_HOME, ~/.hermes, then ~)",
     )
     p.add_argument(
+        "--opencode-home",
+        default=None,
+        help="OpenCode data directory containing opencode.db "
+             "(default: OPENCODE_DB's directory, else $XDG_DATA_HOME/opencode, else ~/.local/share/opencode)",
+    )
+    p.add_argument(
         "--warp-db",
         action="append",
         default=[],
@@ -95,7 +101,7 @@ def parse_args():
         help="score conversations from every project represented in local history",
     )
     p.add_argument("--include-global-skills", action="store_true",
-                   help="also discover skills outside the repo (~/.codex/skills, ~/.agents/skills, ~/.claude/skills, ~/.pi/agent/skills, ~/.grok/skills, ~/.zcode/skills, Hermes home/skills)")
+                   help="also discover skills outside the repo (~/.codex/skills, ~/.agents/skills, ~/.claude/skills, ~/.pi/agent/skills, ~/.grok/skills, ~/.zcode/skills, Hermes home/skills, ~/.config/opencode/skills, ~/.opencode/skills)")
     p.add_argument("--days", type=int, default=45, help="only consider sessions modified in the last N days")
     p.add_argument("--max-sessions", type=int, default=12, help="max sessions to sample for scoring")
     p.add_argument("--per-skill", type=int, default=3, help="max sampled sessions per skill")
@@ -136,7 +142,7 @@ def resolve_repos(repo_args):
 
 def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool,
                     pi_home: Path = None, grok_home: Path = None, zcode_home: Path = None,
-                    hermes_home: Path = None):
+                    hermes_home: Path = None, opencode_home: Path = None):
     if isinstance(repos, Path):
         repos = [repos]
     roots = []
@@ -155,6 +161,8 @@ def discover_skills(repos, codex_home: Path, extra_dirs, include_global: bool,
         for home in (pi_home, grok_home, zcode_home, hermes_home):
             if home is not None:
                 roots.append(Path(home) / "skills")
+        for root in opencode_skill_roots(opencode_home):
+            roots.append(root)
     roots += [Path(d).expanduser() for d in extra_dirs]
 
     skills = {}
@@ -895,6 +903,228 @@ def find_hermes_sessions(databases, cutoff):
     )
     return records, scanned
 
+
+OPENCODE_EDIT_TOOLS = {"edit", "write", "apply_patch", "multiedit", "patch"}
+
+
+def resolve_opencode_home(explicit_path=None):
+    """Resolve the OpenCode data directory used for session and skill discovery.
+
+    Preference order: explicit path, directory of OPENCODE_DB, then the XDG data
+    directory OpenCode itself uses (``$XDG_DATA_HOME/opencode`` or
+    ``~/.local/share/opencode``).
+    """
+    if explicit_path:
+        return Path(explicit_path).expanduser().resolve()
+    env_db = os.environ.get("OPENCODE_DB")
+    if env_db and env_db != ":memory:":
+        return Path(env_db).expanduser().resolve().parent
+    data_home = os.environ.get("XDG_DATA_HOME")
+    if data_home:
+        return (Path(data_home).expanduser() / "opencode").resolve()
+    return (Path.home() / ".local" / "share" / "opencode").resolve()
+
+
+def opencode_skill_roots(data_home=None):
+    """OpenCode v1 global skill directories.
+
+    The data directory holds ``opencode.db``, not skills. Skills live under the
+    config home and the ``~/.opencode`` install directory.
+    """
+    roots = [Path.home() / ".config" / "opencode" / "skills", Path.home() / ".opencode" / "skills"]
+    if data_home is not None:
+        roots.append(Path(data_home) / "skills")
+    return roots
+
+
+def discover_opencode_databases(explicit_path=None):
+    """Find the OpenCode v1 ``opencode.db`` (explicit home, else default home)."""
+    home = resolve_opencode_home(explicit_path)
+    candidate = home / "opencode.db"
+    return [candidate] if candidate.is_file() else []
+
+
+def opencode_database_has_sessions(connection):
+    required = {"session", "message", "part"}
+    rows = connection.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table'"
+    ).fetchall()
+    return required.issubset(row["name"] if hasattr(row, "keys") else row[0] for row in rows)
+
+
+def parse_millis_timestamp(value):
+    """Parse an integer millisecond epoch column into an aware UTC datetime."""
+    if value is None:
+        return None
+    try:
+        return datetime.fromtimestamp(float(value) / 1000.0, tz=timezone.utc)
+    except (TypeError, ValueError, OSError, OverflowError):
+        return None
+
+
+def parse_opencode_session(connection, session_row, skill_names, include_subagents: bool):
+    """Normalize one OpenCode v1 session (opencode.db) to the shared transcript shape.
+
+    Messages carry role/time metadata; their text and tool calls live in the
+    ``part`` table, ordered by ``time_created``.
+    """
+    if session_row["parent_id"] and not include_subagents:
+        return None
+    cwd = session_row["directory"] or session_row["path"]
+    meta = {
+        "id": session_row["id"],
+        "source": "opencode",
+        "cwd": cwd,
+        "title": session_row["title"],
+    }
+    stats = {
+        "user_turns": 0,
+        "assistant_turns": 0,
+        "tool_calls": 0,
+        "repeated_tool_calls": 0,
+        "error_outputs": 0,
+    }
+    entries = TranscriptBuffer()
+    seen_calls = {}
+    skills_used = detect_skill_candidates(cwd or "")
+    has_code_edit_hint = False
+    first_ts = last_ts = None
+
+    messages = connection.execute(
+        "SELECT id, data FROM message WHERE session_id = ? ORDER BY time_created",
+        (session_row["id"],),
+    ).fetchall()
+    parts_by_message = {}
+    for part in connection.execute(
+        "SELECT message_id, data FROM part WHERE session_id = ? ORDER BY time_created",
+        (session_row["id"],),
+    ).fetchall():
+        try:
+            payload = json.loads(part["data"])
+        except (TypeError, ValueError):
+            continue
+        parts_by_message.setdefault(part["message_id"], []).append(payload)
+
+    for message in messages:
+        try:
+            data = json.loads(message["data"])
+        except (TypeError, ValueError):
+            continue
+        role = data.get("role")
+        ts = parse_millis_timestamp((data.get("time") or {}).get("created"))
+        if ts is not None:
+            first_ts = first_ts or ts
+            last_ts = ts
+        parts = parts_by_message.get(message["id"], [])
+        if role == "user":
+            texts = [part.get("text") or "" for part in parts if part.get("type") == "text"]
+            content = "\n".join(text for text in texts if text.strip())
+            if not content.strip() or looks_injected(content):
+                continue
+            stats["user_turns"] += 1
+            skills_used |= detect_skill_candidates(content) & set(skill_names)
+            entries.append(("user", truncate(content, MAX_MSG_CHARS)))
+        elif role == "assistant":
+            stats["assistant_turns"] += 1
+            texts = [part.get("text") or "" for part in parts if part.get("type") == "text"]
+            content = "\n".join(text for text in texts if text.strip())
+            if content.strip() and not looks_injected(content):
+                skills_used |= detect_skill_candidates(content) & set(skill_names)
+                entries.append(("assistant", truncate(content, MAX_MSG_CHARS)))
+            for part in parts:
+                if part.get("type") != "tool":
+                    continue
+                tool = part.get("tool") or "tool"
+                state = part.get("state") or {}
+                tool_input = state.get("input")
+                args_text = json.dumps(tool_input, ensure_ascii=False) if not isinstance(tool_input, str) else tool_input
+                stats["tool_calls"] += 1
+                if tool in OPENCODE_EDIT_TOOLS or tool in GENERIC_EDIT_TOOLS:
+                    has_code_edit_hint = True
+                call_key = hashlib.sha1((tool + args_text).encode()).hexdigest()
+                seen_calls[call_key] = seen_calls.get(call_key, 0) + 1
+                for name in detect_skill_candidates(args_text) & set(skill_names):
+                    skills_used.add(name)
+                if tool == "skill" and isinstance(tool_input, dict):
+                    name = tool_input.get("name")
+                    if name in skill_names:
+                        skills_used.add(name)
+                entries.append((f"tool:{tool}", truncate(args_text, MAX_TOOL_CHARS)))
+                output = state.get("output") or ""
+                if isinstance(output, str) and output.strip():
+                    if "error" in output[:200].lower() or "traceback" in output[:200].lower():
+                        stats["error_outputs"] += 1
+                    entries.append(("tool_output", truncate(output, MAX_TOOL_CHARS)))
+
+    if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
+        return None
+    for count in seen_calls.values():
+        if count > 1:
+            stats["repeated_tool_calls"] += count - 1
+
+    created = parse_millis_timestamp(session_row["time_created"])
+    updated = parse_millis_timestamp(session_row["time_updated"])
+    first_seen = first_ts or created
+    latest_seen = last_ts or updated or first_seen
+    if first_seen is not None:
+        meta["started_at"] = first_seen.isoformat()
+    meta["timestamp"] = (latest_seen or datetime.now(tz=timezone.utc)).isoformat()
+    stats["first_ts"] = first_seen.isoformat() if first_seen is not None else None
+    stats["last_ts"] = latest_seen.isoformat() if latest_seen is not None else None
+    stats["has_code_edits"] = has_code_edit_hint
+    stats["skills"] = sorted(skills_used & set(skill_names))
+    return meta, stats, entries.finish(), sorted(skills_used & set(skill_names))
+
+
+def find_opencode_sessions(databases, cutoff):
+    """Return OpenCode sessions (with their database) newer than cutoff, newest first."""
+    records = []
+    scanned = 0
+    cutoff_ms = cutoff.timestamp() * 1000.0
+    for database in databases:
+        connection = None
+        try:
+            connection = open_warp_database(database)
+            if not opencode_database_has_sessions(connection):
+                print(
+                    f"warning: skipping OpenCode database {database}: incompatible schema",
+                    file=sys.stderr,
+                )
+                continue
+            columns = sqlite_table_columns(connection, "session")
+            required = {"id", "directory", "title", "parent_id", "time_created", "time_updated"}
+            if not required.issubset(columns):
+                print(
+                    f"warning: skipping OpenCode database {database}: incompatible session schema",
+                    file=sys.stderr,
+                )
+                continue
+            rows = connection.execute(
+                """
+                SELECT id, directory, path, title, parent_id, time_created, time_updated
+                FROM session
+                WHERE time_updated >= ?
+                ORDER BY time_updated DESC
+                """,
+                (cutoff_ms,),
+            ).fetchall()
+        except sqlite3.Error as exc:
+            print(f"warning: could not read OpenCode database {database}: {exc}", file=sys.stderr)
+            continue
+        finally:
+            if connection is not None:
+                connection.close()
+        scanned += len(rows)
+        for row in rows:
+            records.append((database, row))
+    records.sort(
+        key=lambda pair: parse_millis_timestamp(pair[1]["time_updated"])
+        or datetime.min.replace(tzinfo=timezone.utc),
+        reverse=True,
+    )
+    return records, scanned
+
+
 def load_warp_conversation_data(record):
     """Load task blobs and ai_query fallback metadata for one conversation."""
     connection = open_warp_database(record["database"])
@@ -1550,6 +1780,7 @@ def main():
     grok_home = Path(args.grok_home).expanduser()
     zcode_home = Path(args.zcode_home).expanduser()
     hermes_home = resolve_hermes_home(args.hermes_home)
+    opencode_home = resolve_opencode_home(args.opencode_home)
     out_dir = Path(args.out).expanduser()
     transcripts_dir = out_dir / "transcripts"
     transcripts_dir.mkdir(parents=True, exist_ok=True)
@@ -1564,6 +1795,7 @@ def main():
         grok_home=grok_home,
         zcode_home=zcode_home,
         hermes_home=hermes_home,
+        opencode_home=opencode_home,
     )
     cutoff = datetime.now(timezone.utc) - timedelta(days=args.days)
 
@@ -1822,9 +2054,51 @@ def main():
         print(f"error: Hermes state.db not found under {args.hermes_home}", file=sys.stderr)
         sys.exit(1)
 
+    requested_opencode = args.harness in ("auto", "all", "opencode")
+    opencode_databases = discover_opencode_databases(args.opencode_home)
+    if requested_opencode and opencode_databases:
+        opencode_records, opencode_scanned = find_opencode_sessions(opencode_databases, cutoff)
+        sources["opencode"] = {
+            "home": str(opencode_databases[0].parent),
+            "records_in_window": len(opencode_records),
+        }
+        scanned_count += opencode_scanned
+        for database, row in opencode_records:
+            connection = open_warp_database(database)
+            try:
+                parsed = parse_opencode_session(connection, row, skills.keys(), args.include_subagents)
+            finally:
+                connection.close()
+            if parsed is None:
+                continue
+            meta, stats, entries, skills_used = parsed
+            if not args.all_conversations and not session_matches_repos(
+                meta.get("cwd"),
+                repos,
+            ):
+                continue
+            in_scope_count += 1
+            if stats["assistant_turns"] < 1 or stats["tool_calls"] < 1:
+                continue
+            sessions.append({
+                "harness": "opencode",
+                "meta": meta,
+                "stats": stats,
+                "skills_used": skills_used,
+                "file": str(database),
+                "modified_at": meta["timestamp"],
+                "_entries": entries,
+            })
+    elif args.harness == "opencode":
+        print(
+            f"error: OpenCode opencode.db not found under {resolve_opencode_home(args.opencode_home)}",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
     if not sources:
         print(
-            "error: no supported session source found (Claude Code, Codex, Warp, Pi, Grok, ZCode, or Hermes)",
+            "error: no supported session source found (Claude Code, Codex, Warp, Pi, Grok, ZCode, Hermes, or OpenCode)",
             file=sys.stderr,
         )
         sys.exit(1)
@@ -1839,6 +2113,7 @@ def main():
             grok_home=grok_home,
             zcode_home=zcode_home,
             hermes_home=hermes_home,
+            opencode_home=opencode_home,
         )
     installed_skill_names = set(skills)
     for session in sessions:
@@ -1908,6 +2183,7 @@ def main():
         "grok_home": str(grok_home) if "grok" in sources else None,
         "zcode_home": str(zcode_home) if "zcode" in sources else None,
         "hermes_home": str(hermes_home) if "hermes" in sources else None,
+        "opencode_home": str(opencode_home) if "opencode" in sources else None,
         "warp_databases": [str(path) for path in warp_databases],
         "conversation_scope": conversation_scope,
         "repo": str(repos[0]) if len(repos) == 1 else None,

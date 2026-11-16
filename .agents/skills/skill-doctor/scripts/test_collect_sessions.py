@@ -15,14 +15,17 @@ from collect_sessions import (
     find_claude_session_files,
     find_grok_session_files,
     find_hermes_sessions,
+    find_opencode_sessions,
     find_pi_session_files,
     parse_claude_session,
     parse_codex_session,
     parse_grok_session,
     parse_hermes_session,
+    parse_opencode_session,
     parse_pi_session,
     parse_zcode_session,
     resolve_hermes_home,
+    resolve_opencode_home,
     session_matches_repos,
 )
 
@@ -904,6 +907,157 @@ class HermesCollectorTests(unittest.TestCase):
                     os.environ["HERMES_HOME"] = old_hermes_home
 
             self.assertEqual(resolved, dot_hermes.resolve())
+
+
+def _opencode_db(path):
+    import sqlite3
+
+    conn = sqlite3.connect(path)
+    conn.executescript(
+        """
+        CREATE TABLE session (
+            id TEXT, directory TEXT, path TEXT, title TEXT, parent_id TEXT,
+            time_created INTEGER, time_updated INTEGER
+        );
+        CREATE TABLE message (
+            id TEXT, session_id TEXT, time_created INTEGER, data TEXT
+        );
+        CREATE TABLE part (
+            id TEXT, message_id TEXT, session_id TEXT, time_created INTEGER, data TEXT
+        );
+        """
+    )
+    conn.commit()
+    return conn
+
+
+class OpenCodeCollectorTests(unittest.TestCase):
+    def test_parse_opencode_session_extracts_stats_and_skill_tool(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _opencode_db(Path(tmp) / "opencode.db")
+            base = 1_800_000_000_000
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_1','/tmp/repo','repo','t',NULL,?,?)",
+                (base, base + 60_000),
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('m1','ses_1',?,?)",
+                (base, json.dumps({"role": "user", "time": {"created": base}})),
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p1','m1','ses_1',?,?)",
+                (base, json.dumps({"type": "text", "text": "use my-skill please"})),
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('m2','ses_1',?,?)",
+                (base + 1000, json.dumps({"role": "assistant", "time": {"created": base + 1000}})),
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p2','m2','ses_1',?,?)",
+                (
+                    base + 1000,
+                    json.dumps({
+                        "type": "tool",
+                        "tool": "skill",
+                        "state": {"input": {"name": "my-skill"}, "status": "completed", "output": "loaded"},
+                    }),
+                ),
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p3','m2','ses_1',?,?)",
+                (
+                    base + 2000,
+                    json.dumps({
+                        "type": "tool",
+                        "tool": "apply_patch",
+                        "state": {"input": {"patchText": "*** Begin Patch"}, "status": "error", "output": "error: boom"},
+                    }),
+                ),
+            )
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM session").fetchone()
+
+            parsed = parse_opencode_session(conn, row, {"my-skill"}, False)
+
+            self.assertIsNotNone(parsed)
+            meta, stats, entries, skills_used = parsed
+            self.assertEqual(meta["id"], "ses_1")
+            self.assertEqual(meta["cwd"], "/tmp/repo")
+            self.assertEqual(stats["user_turns"], 1)
+            self.assertEqual(stats["assistant_turns"], 1)
+            self.assertEqual(stats["tool_calls"], 2)
+            self.assertEqual(stats["error_outputs"], 1)
+            self.assertTrue(stats["has_code_edits"])
+            self.assertEqual(skills_used, ["my-skill"])
+            self.assertTrue(any(role == "tool:skill" for role, _ in entries))
+
+    def test_parse_opencode_session_skips_child_sessions(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            conn = _opencode_db(Path(tmp) / "opencode.db")
+            base = 1_800_000_000_000
+            conn.execute(
+                "INSERT INTO session VALUES ('ses_child','/tmp','',NULL,'ses_parent',?,?)",
+                (base, base),
+            )
+            conn.execute(
+                "INSERT INTO message VALUES ('m','ses_child',?,?)",
+                (base, json.dumps({"role": "assistant", "time": {"created": base}})),
+            )
+            conn.execute(
+                "INSERT INTO part VALUES ('p','m','ses_child',?,?)",
+                (base, json.dumps({"type": "tool", "tool": "bash", "state": {"input": {"command": "ls"}, "output": "ok"}})),
+            )
+            conn.row_factory = sqlite3.Row
+            row = conn.execute("SELECT * FROM session").fetchone()
+
+            self.assertIsNone(parse_opencode_session(conn, row, set(), False))
+            self.assertIsNotNone(parse_opencode_session(conn, row, set(), True))
+
+    def test_find_opencode_sessions_filters_by_cutoff(self):
+        import sqlite3
+
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "opencode.db"
+            conn = _opencode_db(database)
+            now = datetime.now(tz=timezone.utc)
+            recent = int(now.timestamp() * 1000)
+            old = int((now - timedelta(days=90)).timestamp() * 1000)
+            conn.execute("INSERT INTO session VALUES ('new','/tmp','','new',NULL,?,?)", (recent, recent))
+            conn.execute("INSERT INTO session VALUES ('old','/tmp','','old',NULL,?,?)", (old, old))
+            conn.commit()
+            conn.close()
+
+            records, scanned = find_opencode_sessions(
+                [database], now - timedelta(days=45)
+            )
+
+            self.assertEqual(scanned, 1)
+            self.assertEqual([row["id"] for _, row in records], ["new"])
+
+    def test_resolve_opencode_home_uses_xdg_data_home(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_home = Path(tmp) / "xdg"
+            old = os.environ.get("XDG_DATA_HOME")
+            old_db = os.environ.get("OPENCODE_DB")
+            try:
+                os.environ["XDG_DATA_HOME"] = str(data_home)
+                os.environ.pop("OPENCODE_DB", None)
+                resolved = resolve_opencode_home(None)
+            finally:
+                if old is None:
+                    os.environ.pop("XDG_DATA_HOME", None)
+                else:
+                    os.environ["XDG_DATA_HOME"] = old
+                if old_db is None:
+                    os.environ.pop("OPENCODE_DB", None)
+                else:
+                    os.environ["OPENCODE_DB"] = old_db
+
+            self.assertEqual(resolved, (data_home / "opencode").resolve())
 
 
 if __name__ == "__main__":

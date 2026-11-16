@@ -48,6 +48,8 @@ class ReportRendererTests(unittest.TestCase):
         self.assertIn("| Warp | `warp` |", harness_text)
         self.assertIn("| Claude Code | `claude` |", harness_text)
         self.assertIn("| Codex | `codex` |", harness_text)
+        self.assertIn("| OpenCode | `opencode` |", harness_text)
+        self.assertIn("--opencode-home PATH", harness_text)
         self.assertIn("stop before creating a report directory", harness_text)
     def test_skill_scores_verbosity_and_procedure_compliance(self):
         skill_root = Path(__file__).resolve().parent.parent
